@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate marpa_scanless;
-
 pub mod error;
 pub mod grammar;
 pub mod lexer;

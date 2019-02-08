@@ -9,6 +9,7 @@ macro_rules! grammar {
     use marpa::grammar::Grammar;
     use marpa::error::Error;
     #[derive(CompileGrammar)]
+    #[source=$source]
     struct _DummyG;
     let tmp : Result<Grammar,Error> = this_grammar!();
     $var = tmp;
