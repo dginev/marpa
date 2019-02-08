@@ -2,6 +2,7 @@ use crate::result::Result;
 use crate::thin;
 use std::collections::HashMap;
 
+#[derive(Debug)]
 pub struct Grammar {
     internal: thin::Grammar,
     rules: HashMap<thin::Rule, thin::Symbol>,

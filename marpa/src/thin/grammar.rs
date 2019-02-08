@@ -6,6 +6,7 @@ use crate::thin::{Config, EventIter, Rule, RuleIter, SymIter, Symbol};
 
 use std::ptr;
 
+#[derive(Debug)]
 pub struct Grammar {
     internal: Marpa_Grammar,
 }

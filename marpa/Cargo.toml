@@ -11,7 +11,5 @@ edition = "2018"
 [dependencies]
 regex = "1.1.0"
 regex-syntax = "0.6.4"
-
-[dependencies.libmarpa-sys]
-version = "0.2.0"
-path="../libmarpa-sys"
+libmarpa-sys = {version = "0.2.0", path="../libmarpa-sys"}
+marpa-scanless = {version = "0.0.1", path="../marpa-scanless"}

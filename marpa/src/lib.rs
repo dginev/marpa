@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate marpa_scanless;
+
 pub mod error;
 pub mod grammar;
 pub mod lexer;
@@ -6,3 +9,6 @@ pub mod result;
 pub mod stack;
 pub mod thin;
 pub mod tree_builder;
+
+#[macro_use]
+pub mod macros;

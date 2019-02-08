@@ -1,7 +1,5 @@
 #![allow(non_snake_case, unused_variables)]
 
-extern crate marpa;
-
 use marpa::grammar::Grammar;
 use marpa::lexer::byte_scanner::*;
 use marpa::parser::*;
@@ -21,6 +19,7 @@ fn real_main() -> Result<()> {
 
     let ws_char = g.string_set(None, "\t\n\r ")?;
     let ws = g.star(None, ws_char)?;
+
     let sep = g.literal_string(None, "::=")?;
     let term = g.literal_string(None, ";")?;
 
