@@ -1,6 +1,7 @@
 [workspace]
 members = [
 	"marpa",
+	"marpa-derives",
 	"marpa-scanless",
 	"libmarpa-sys",
 ]

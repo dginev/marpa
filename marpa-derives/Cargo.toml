@@ -1,11 +1,11 @@
 [package]
-name = "marpa-scanless"
-description = "Scanless interface for Marpa"
+name = "marpa-derives"
+description = "Compile-time BNF to Marpa Grammar builder"
 version = "0.0.1"
 edition = "2018"
 
 [lib]
-crate-type=["lib"]
+proc-macro = true
 
 [dependencies]
 regex = "1.1.0"
@@ -14,4 +14,3 @@ proc-macro2 = "0.4"
 quote = "0.6"
 lazy_static = "1.0.0"
 marpa = {version = "0.3.0", path="../marpa"}
-marpa-derives = {version = "0.0.1", path="../marpa-derives"}

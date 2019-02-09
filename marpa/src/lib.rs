@@ -7,5 +7,3 @@ pub mod stack;
 pub mod thin;
 pub mod tree_builder;
 pub mod metag;
-#[macro_use]
-pub mod macros;

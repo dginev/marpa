@@ -13,4 +13,3 @@ regex = "1.1.0"
 regex-syntax = "0.6.4"
 lazy_static = "1.0.0"
 libmarpa-sys = {version = "0.2.0", path="../libmarpa-sys"}
-marpa-scanless = {version = "0.0.1", path="../marpa-scanless"}

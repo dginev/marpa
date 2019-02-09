@@ -1,15 +1,7 @@
 #[macro_use]
-extern crate marpa_scanless;
+extern crate marpa_derives;
 #[macro_use]
-extern crate marpa; // 2018 style macro import
-
-use marpa::metag;
-
-#[test]
-fn meta_g_is_available() {
-  let meta_g = metag::new();
-  assert!(meta_g.is_ok());
-}
+extern crate marpa_scanless;
 
 #[test] 
 fn test_simple_arith_grammar() {
