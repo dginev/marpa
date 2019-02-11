@@ -21,11 +21,11 @@ Expression ::=
 Number ~ digits
 digits ~ [\d]+
 :discard ~ whitespace
-whitespace ~ [\s]+
+whitespace ~ [\s]+w
 "###);
 
   assert!(grammar_result.is_ok());
-  // println!("---- RESULT IS : {:?}", grammar_result);
+  println!("---- RESULT IS : {:?}", grammar_result);
   // let input = "42 * 1 + 7";
   // let value_ref = grammar.parse( input, my_actions );
 }
