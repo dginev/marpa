@@ -73,7 +73,7 @@ sub symbols_generator {
     my $symbols = shift;
     my $generated = "";
 
-    for my $key (keys %{$symbols}) {
+    for my $key (sort keys %{$symbols}) {
         $key = escaped($key);
         $generated .= "                \"$key\" ==> MetaRecceSymbol {\n";
         my $symbol_hash = $$symbols{$key};
@@ -140,7 +140,7 @@ my $date = scalar localtime();
 #  here, to 
 
 my $declare_character_classes = "character_classes: map!(\n";
-for my $k (keys %{$character_classes}) {
+for my $k (sort keys %{$character_classes}) {
     my @vals = @{$$character_classes{$k}};
     $declare_character_classes .= "          \"$k\" ==> vec![\"".join("\",\"", @vals)."\"],\n";
 }
@@ -154,7 +154,7 @@ my $declare_discard_default_adverbs = "discard_default_adverbs: ".($g{discard_de
 my $declare_first_lhs = "first_lhs: \"$g{first_lhs}\"";
 
 my $declare_lexeme_default_adverbs = "lexeme_default_adverbs: map!(\n";
-for my $k (keys %{$lexeme_default_adverbs}) {
+for my $k (sort keys %{$lexeme_default_adverbs}) {
     my $v = $$lexeme_default_adverbs{$k};
     $declare_lexeme_default_adverbs .= "          \"$k\" ==> \"$v\",\n";
 }
