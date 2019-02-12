@@ -6,12 +6,12 @@ macro_rules! grammar {
     macrog
   }};
   ($var:ident, $source:expr) => {{
-    use marpa::grammar::Grammar;
+    use marpa::scanless::G;
     use marpa::error::Error;
     #[derive(CompileGrammar)]
     #[source=$source]
     struct _DummyG;
-    let tmp : Result<Grammar,Error> = this_grammar!();
+    let tmp : Result<G,Error> = this_grammar!();
     $var = tmp;
   }};
 }

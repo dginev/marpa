@@ -4,6 +4,7 @@ extern crate proc_macro;
 use proc_macro::TokenStream;
 use quote::quote;
 use syn::{parse_macro_input, DeriveInput, Lit, Meta};
+use marpa::scanless::G;
 
 #[proc_macro_derive(CompileGrammar, attributes(source))]
 pub fn compile_grammar(input: TokenStream) -> TokenStream {
@@ -15,13 +16,12 @@ pub fn compile_grammar(input: TokenStream) -> TokenStream {
     },
     _ => panic!("only accepts #[source = \"SLIF string\"] attribute syntax, mandatory double-quotes (parse_meta)"),
   };
-  println!("SOURCE: {:?}", source);
+  let compiled = G::new(&source);
 
   quote!(
     macro_rules! this_grammar {
       () => {
-        Grammar::new()
-        
+        Ok(#compiled)
       };
     }
   ).into()
