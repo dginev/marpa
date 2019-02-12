@@ -41,7 +41,8 @@ impl Default for G {
   }
 }
 
-
+impl G {
+  pub fn meta_grammar() -> Self {
     // let mut meta_slg = G::new();
     // meta_slg.trace_terminals = false;
     // // TODO: should we inline G::hash_to_runtime ? Is that a high price?
@@ -56,4 +57,22 @@ impl Default for G {
     // meta_slg.MASK_BY_RULE_ID = mask_by_rule_id;
     // meta_slg.trace_terminals = false;
 
-    // meta_slg
+    G::default() // TODO
+  }
+
+
+  // sub Marpa::R2::Scanless::G::new {
+  //   my ( $class, @hash_ref_args ) = @_;
+
+  //   my $slg = [];
+  //   bless $slg, $class;
+
+  //   my ($dsl, $g1_args) = Marpa::R2::Internal::Scanless::G::set ( $slg, 'new', @hash_ref_args );
+  //   my $ast = Marpa::R2::Internal::MetaAST->new( $dsl );
+  //   my $hashed_ast = $ast->ast_to_hash();
+  //   Marpa::R2::Internal::Scanless::G::hash_to_runtime($slg, $hashed_ast, $g1_args);
+  //   return $slg;
+  // } ## end sub Marpa::R2::Scanless::G::new
+
+}
+
