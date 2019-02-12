@@ -4,8 +4,10 @@ use proc_macro2::TokenStream;
 use quote::ToTokens;
 use quote::quote;
 use crate::metag;
-use crate::metag::MetaRecce;
+use crate::meta_ast::MetaRecce;
 use crate::grammar::Grammar;
+use crate::meta_ast::MetaAST;
+use crate::result::*;
 
 #[derive(Debug)]
 pub struct G {
@@ -51,10 +53,10 @@ impl Default for G {
 impl G {
   pub fn meta_grammar() -> Self {
     let mut meta_slg = G::default();
-    let hashed_metag = metag::hashed_grammar();
+    let mut hashed_metag = metag::hashed_grammar();
     meta_slg.trace_terminals = false;
     // TODO: should we inline G::hash_to_runtime ? Is that a high price?
-    meta_slg.hash_to_runtime(hashed_metag); // , map!("bless_package"=>"MetaAST_Nodes" ???
+    meta_slg.hash_to_runtime(&mut hashed_metag); // , map!("bless_package"=>"MetaAST_Nodes" ???
 
     // let mut thick_g1_grammar = meta_slg.thick_g1_grammar;
     // let mut mask_by_rule_id = Vec::new();
@@ -86,29 +88,24 @@ impl G {
 
 
 
-pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) { 
+pub fn hash_to_runtime(&mut self, mut hashed_source: &mut MetaRecce) -> Result<()> { 
+  let trace_terminals = self.trace_terminals;
+  //     # Pre-lexer G1 processing
+  let start_lhs = hashed_source.start_lhs;
+  if start_lhs.is_empty() {
+    return err("No rules in SLIF grammar")
+  }
+  MetaAST::start_rule_create(&mut hashed_source, start_lhs);
 
-//     my $trace_terminals =
-//         $slg->[Marpa::R2::Internal::Scanless::G::TRACE_TERMINALS];
-
-//     # Pre-lexer G1 processing
-
-//     my $start_lhs = $hashed_source->{'start_lhs'}
-//         // $hashed_source->{'first_lhs'};
-//     Marpa::R2::exception('No rules in SLIF grammar')
-//         if not defined $start_lhs;
-//     Marpa::R2::Internal::MetaAST::start_rule_create( $hashed_source,
-//         $start_lhs );
-
-//     $slg->[Marpa::R2::Internal::Scanless::G::CACHE_RULEIDS_BY_LHS_NAME] = {};
-//     $slg->[Marpa::R2::Internal::Scanless::G::DEFAULT_G1_START_ACTION] =
+//     self.cache_ruleids_by_lhs_name = {};
+//     self.default_g1_start_action =
 //         $hashed_source->{'default_g1_start_action'};
 
-//     my $trace_fh =
-//         $slg->[Marpa::R2::Internal::Scanless::G::TRACE_FILE_HANDLE] =
+  // let trace_fh =
+//         self.trace_file_handle =
 //         $g1_args->{trace_file_handle} // \*STDERR;
 
-//     my $if_inaccessible_default =
+  // let if_inaccessible_default =
 //         $hashed_source->{defaults}->{if_inaccessible} // 'warn';
 
 //     # Prepare the arguments for the G1 grammar
@@ -119,18 +116,18 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     $g1_args->{'_internal_'} =
 //         { 'if_inaccessible' => $if_inaccessible_default };
 
-//     my $thick_g1_grammar = Marpa::R2::Grammar->new($g1_args);
-//     my $g1_tracer        = $thick_g1_grammar->tracer();
-//     my $g1_thin          = $g1_tracer->grammar();
+  // let thick_g1_grammar = Marpa::R2::Grammar->new($g1_args);
+  // let g1_tracer        = $thick_g1_grammar->tracer();
+  // let g1_thin          = $g1_tracer->grammar();
 
-//     my $symbol_ids_by_event_name_and_type = {};
-//     $slg->[
+  // let symbol_ids_by_event_name_and_type = {};
+//     self.[
 //         Marpa::R2::Internal::Scanless::G::SYMBOL_IDS_BY_EVENT_NAME_AND_TYPE]
 //         = $symbol_ids_by_event_name_and_type;
 
-//     my $completion_events_by_name = $hashed_source->{completion_events};
-//     my $completion_events_by_id =
-//         $slg->[Marpa::R2::Internal::Scanless::G::COMPLETION_EVENT_BY_ID] = [];
+  // let completion_events_by_name = $hashed_source->{completion_events};
+  // let completion_events_by_id =
+//         self.completion_event_by_id = [];
 //     for my $symbol_name ( keys %{$completion_events_by_name} ) {
 //         my ( $event_name, $is_active ) =
 //             @{ $completion_events_by_name->{$symbol_name} };
@@ -145,16 +142,16 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //         $g1_thin->symbol_is_completion_event_set( $symbol_id, 1 );
 //         $g1_thin->completion_symbol_activate( $symbol_id, 0 )
 //             if not $is_active;
-//         $slg->[Marpa::R2::Internal::Scanless::G::COMPLETION_EVENT_BY_ID]
+//         self.completion_event_by_id
 //             ->[$symbol_id] = $event_name;
 //         push
 //             @{ $symbol_ids_by_event_name_and_type->{$event_name}->{completion}
 //             }, $symbol_id;
 //     } ## end for my $symbol_name ( keys %{$completion_events_by_name...})
 
-//     my $nulled_events_by_name = $hashed_source->{nulled_events};
-//     my $nulled_events_by_id =
-//         $slg->[Marpa::R2::Internal::Scanless::G::NULLED_EVENT_BY_ID] = [];
+  // let nulled_events_by_name = $hashed_source->{nulled_events};
+  // let nulled_events_by_id =
+//         self.nulled_event_by_id = [];
 //     for my $symbol_name ( keys %{$nulled_events_by_name} ) {
 //         my ( $event_name, $is_active ) =
 //             @{ $nulled_events_by_name->{$symbol_name} };
@@ -168,15 +165,15 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //         # Must be done before precomputation
 //         $g1_thin->symbol_is_nulled_event_set( $symbol_id, 1 );
 //         $g1_thin->nulled_symbol_activate( $symbol_id, 0 ) if not $is_active;
-//         $slg->[Marpa::R2::Internal::Scanless::G::NULLED_EVENT_BY_ID]
+//         self.nulled_event_by_id
 //             ->[$symbol_id] = $event_name;
 //         push @{ $symbol_ids_by_event_name_and_type->{$event_name}->{nulled} },
 //             $symbol_id;
 //     } ## end for my $symbol_name ( keys %{$nulled_events_by_name} )
 
-//     my $prediction_events_by_name = $hashed_source->{prediction_events};
-//     my $prediction_events_by_id =
-//         $slg->[Marpa::R2::Internal::Scanless::G::PREDICTION_EVENT_BY_ID] = [];
+  // let prediction_events_by_name = $hashed_source->{prediction_events};
+  // let prediction_events_by_id =
+//         self.prediction_event_by_id = [];
 //     for my $symbol_name ( keys %{$prediction_events_by_name} ) {
 //         my ( $event_name, $is_active ) =
 //             @{ $prediction_events_by_name->{$symbol_name} };
@@ -191,15 +188,15 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //         $g1_thin->symbol_is_prediction_event_set( $symbol_id, 1 );
 //         $g1_thin->prediction_symbol_activate( $symbol_id, 0 )
 //             if not $is_active;
-//         $slg->[Marpa::R2::Internal::Scanless::G::PREDICTION_EVENT_BY_ID]
+//         self.prediction_event_by_id
 //             ->[$symbol_id] = $event_name;
 //         push
 //             @{ $symbol_ids_by_event_name_and_type->{$event_name}->{prediction}
 //             }, $symbol_id;
 //     } ## end for my $symbol_name ( keys %{$prediction_events_by_name...})
 
-//     my $lexeme_events_by_id =
-//         $slg->[Marpa::R2::Internal::Scanless::G::LEXEME_EVENT_BY_ID] = [];
+  // let lexeme_events_by_id =
+//         self.lexeme_event_by_id = [];
 
 //     if (defined(
 //             my $precompute_error =
@@ -232,10 +229,10 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     } ## end SYMBOL: for my $symbol_id ( 0 .. $g1_thin->highest_symbol_id(...))
 
 //     # A first phase of applying defaults
-//     my $discard_default_adverbs = $hashed_source->{discard_default_adverbs};
-//     my $lexeme_declarations     = $hashed_source->{lexeme_declarations};
-//     my $lexeme_default_adverbs  = $hashed_source->{lexeme_default_adverbs};
-//     my $latm_default_value      = $lexeme_default_adverbs->{latm} // 0;
+  // let discard_default_adverbs = $hashed_source->{discard_default_adverbs};
+  // let lexeme_declarations     = $hashed_source->{lexeme_declarations};
+  // let lexeme_default_adverbs  = $hashed_source->{lexeme_default_adverbs};
+  // let latm_default_value      = $lexeme_default_adverbs->{latm} // 0;
 
 //     # Current lexeme data is spread out in many places.
 //     # Change so that it all resides in this hash, indexed by
@@ -251,8 +248,8 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 
 //     # Lexers
 
-//     my $lexer_id   = 0;
-//     my $lexer_name = 'L0';
+  // let lexer_id   = 0;
+  // let lexer_name = 'L0';
 
 //     my %lexer_id_by_name                    = ();
 //     my %thick_grammar_by_lexer_name         = ();
@@ -262,9 +259,9 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     state $lex_start_symbol_name = '[:start_lex]';
 //     state $discard_symbol_name   = '[:discard]';
 
-//     my $lexer_rules = $hashed_source->{rules}->{$lexer_name};
-//     my $character_class_hash = $hashed_source->{character_classes};
-//     my $lexer_symbols = $hashed_source->{symbols}->{'L'};
+  // let lexer_rules = $hashed_source->{rules}->{$lexer_name};
+  // let character_class_hash = $hashed_source->{character_classes};
+  // let lexer_symbols = $hashed_source->{symbols}->{'L'};
 
 //     # If no lexer rules, fake a lexer
 //     # Fake a lexer -- it discards symbols in character classes which
@@ -296,7 +293,7 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     my %lex_separator     = ();
 //     my %lexer_rule_by_tag = ();
 
-//     my $rule_tag = 'rule0';
+  // let rule_tag = 'rule0';
 //     for my $lex_rule ( @{$lexer_rules} ) {
 //         $lex_rule->{tag} = ++$rule_tag;
 //         my %lex_rule_copy = %{$lex_rule};
@@ -362,12 +359,12 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     $lex_args{symbols} = \%this_lexer_symbols;
 
 //     # Create the thick lex grammar
-//     my $lex_grammar = Marpa::R2::Grammar->new( \%lex_args );
+  // let lex_grammar = Marpa::R2::Grammar->new( \%lex_args );
 //     $thick_grammar_by_lexer_name{$lexer_name} = $lex_grammar;
-//     my $lex_tracer = $lex_grammar->tracer();
-//     my $lex_thin   = $lex_tracer->grammar();
+  // let lex_tracer = $lex_grammar->tracer();
+  // let lex_thin   = $lex_tracer->grammar();
 
-//     my $lex_discard_symbol_id =
+  // let lex_discard_symbol_id =
 //         $lex_tracer->symbol_by_name($discard_symbol_name) // -1;
 //     my @lex_lexeme_to_g1_symbol;
 //     $lex_lexeme_to_g1_symbol[$_] = -1 for 0 .. $g1_thin->highest_symbol_id();
@@ -397,7 +394,7 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     } ## end LEXEME_NAME: for my $lexeme_name (@lex_lexeme_names)
 
 //     my @lex_rule_to_g1_lexeme;
-//     my $lex_start_symbol_id =
+  // let lex_start_symbol_id =
 //         $lex_tracer->symbol_by_name($lex_start_symbol_name);
 //     RULE_ID: for my $rule_id ( 0 .. $lex_thin->highest_rule_id() ) {
 //         my $lhs_id = $lex_thin->rule_lhs($rule_id);
@@ -467,7 +464,7 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     # Apply defaults to determine the discard event for every
 //     # rule id of the lexer.
 
-//     my $default_discard_event = $discard_default_adverbs->{event};
+  // let default_discard_event = $discard_default_adverbs->{event};
 //     RULE_ID: for my $rule_id ( 0 .. $lex_thin->highest_rule_id() ) {
 //         my $tag = $lex_grammar->tag($rule_id);
 //         next RULE_ID if not defined $tag;
@@ -502,9 +499,9 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 
 //     # Post-lexer G1 processing
 
-//     my $thick_L0 = $thick_grammar_by_lexer_name{'L0'};
-//     my $thin_L0  = $thick_L0->[Marpa::R2::Internal::Grammar::C];
-//     my $thin_slg = $slg->[Marpa::R2::Internal::Scanless::G::C] =
+  // let thick_L0 = $thick_grammar_by_lexer_name{'L0'};
+  // let thin_L0  = $thick_L0->[Marpa::R2::Internal::Grammar::C];
+  // let thin_slg = self.c =
 //         Marpa::R2::Thin::SLG->new( $thin_L0, $g1_tracer->grammar() );
 
 //     # Relies on default lexer being given number zero
@@ -571,7 +568,7 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     } ## end LEXEME: for my $lexeme_name ( keys %g1_id_by_lexeme_name )
 
 //     # Second phase of lexer processing
-//     my $lexer_rule_to_g1_lexeme = $lexer_and_rule_to_g1_lexeme{$lexer_name};
+  // let lexer_rule_to_g1_lexeme = $lexer_and_rule_to_g1_lexeme{$lexer_name};
 
 //     RULE_ID: for my $lexer_rule_id ( 0 .. $#{$lexer_rule_to_g1_lexeme} ) {
 //         my $g1_lexeme_id = $lexer_rule_to_g1_lexeme->[$lexer_rule_id];
@@ -584,7 +581,7 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //         my $discard_event = $discard_event_by_lexer_rule_id[$lexer_rule_id];
 //         if ( defined $discard_event ) {
 //             my ( $event_name, $is_active ) = @{$discard_event};
-//             $slg->[
+//             self.[
 //                 Marpa::R2::Internal::Scanless::G::DISCARD_EVENT_BY_LEXER_RULE
 //             ]->[$lexer_rule_id] = $event_name;
 //             push @{ $symbol_ids_by_event_name_and_type->{$event_name}
@@ -598,7 +595,7 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     # Second phase of G1 processing
 
 //     $thin_slg->precompute();
-//     $slg->[Marpa::R2::Internal::Scanless::G::THICK_G1_GRAMMAR] =
+//     self.thick_g1_grammar =
 //         $thick_g1_grammar;
 
 //     # More lexer processing
@@ -607,9 +604,9 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //     {
 //         my $character_class_table =
 //             $character_class_table_by_lexer_name{$lexer_name};
-//         $slg->[Marpa::R2::Internal::Scanless::G::CHARACTER_CLASS_TABLES]
+//         self.character_class_tables
 //             ->[$lexer_id] = $character_class_table;
-//         $slg->[Marpa::R2::Internal::Scanless::G::THICK_LEX_GRAMMARS]
+//         self.thick_lex_grammars
 //             ->[$lexer_id] = $thick_grammar_by_lexer_name{$lexer_name};
 //     }
 
@@ -665,7 +662,7 @@ pub fn hash_to_runtime(&mut self, hashed_source: MetaRecce) {
 //         } ## end LEXEME: for my $lexeme_name ( keys %g1_id_by_lexeme_name )
 
 //     } ## end APPLY_DEFAULT_LEXEME_ADVERBS:
-
+  Ok(())
 } // G::hash_to_runtime
 
 

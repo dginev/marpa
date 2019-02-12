@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! result_from {
     ( $t1:ident, $t2:ident ) => {
         impl From<$t2> for Result<$t1> {
@@ -6,4 +7,13 @@ macro_rules! result_from {
             }
         }
     };
+}
+
+#[macro_export]
+macro_rules! map {
+  ($( $key:literal ==> $val:expr ),*) => {{
+    let mut map = ::std::collections::HashMap::new();
+    $( map.insert($key, $val); )*
+    map
+  }}
 }
