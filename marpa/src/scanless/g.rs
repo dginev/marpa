@@ -11,21 +11,21 @@ use crate::result::*;
 
 #[derive(Debug)]
 pub struct G {
-  c: bool,
-  thick_lex_grammars: Grammar,
-  thick_g1_grammar: Grammar,
-  character_class_tables: HashMap<char,String>,
-  discard_event_by_lexer_rule: bool,
-  mask_by_rule_id: Vec<bool>,
-  default_g1_start_action: String,
-  completion_event_by_id: Option<bool>,
-  nulled_event_by_id: Option<bool>,
-  prediction_event_by_id: Option<bool>,
-  lexeme_event_by_id: Option<bool>,
-  symbol_ids_by_event_name_and_type: HashMap<String, String>,
-  cache_ruleids_by_lhs_name: HashMap<String, String>,
-  trace_file_handle: bool,
-  trace_terminals: bool,
+  pub c: bool,
+  pub thick_lex_grammars: Grammar,
+  pub thick_g1_grammar: Grammar,
+  pub character_class_tables: HashMap<char,String>,
+  pub discard_event_by_lexer_rule: bool,
+  pub mask_by_rule_id: Vec<bool>,
+  pub default_g1_start_action: String,
+  pub completion_event_by_id: Option<bool>,
+  pub nulled_event_by_id: Option<bool>,
+  pub prediction_event_by_id: Option<bool>,
+  pub lexeme_event_by_id: Option<bool>,
+  pub symbol_ids_by_event_name_and_type: HashMap<String, String>,
+  pub cache_ruleids_by_lhs_name: HashMap<String, String>,
+  pub trace_file_handle: bool,
+  pub trace_terminals: bool,
 }
 
 impl Default for G {
@@ -51,12 +51,12 @@ impl Default for G {
 }
 
 impl G {
-  pub fn meta_grammar() -> Self {
+  pub fn meta_grammar() -> Result<Self> {
     let mut meta_slg = G::default();
     let mut hashed_metag = metag::hashed_grammar();
     meta_slg.trace_terminals = false;
     // TODO: should we inline G::hash_to_runtime ? Is that a high price?
-    meta_slg.hash_to_runtime(&mut hashed_metag); // , map!("bless_package"=>"MetaAST_Nodes" ???
+    meta_slg.hash_to_runtime(&mut hashed_metag)?; // , map!("bless_package"=>"MetaAST_Nodes" ???
 
     // let mut thick_g1_grammar = meta_slg.thick_g1_grammar;
     // let mut mask_by_rule_id = Vec::new();
@@ -66,7 +66,7 @@ impl G {
     
     // meta_slg.MASK_BY_RULE_ID = mask_by_rule_id;
     // meta_slg.trace_terminals = false;
-    meta_slg  
+    Ok(meta_slg)
   }
 
 

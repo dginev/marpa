@@ -82,7 +82,7 @@ pub struct MetaAST {
 
 impl MetaAST {
   pub fn new(p_rules_source: &str) -> Result<Self> {
-    let mut meta_recce = scanless::R::meta_recce();
+    let mut meta_recce = scanless::R::meta_recce()?;
     match meta_recce.read(p_rules_source) {
       Ok(()) => {},
       Err(e) => return err(&format!("Parse of BNF/Scanless source failed\n {:?}", e))

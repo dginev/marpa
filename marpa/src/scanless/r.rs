@@ -1,23 +1,25 @@
-use crate::meta_ast::MetaRecce;
+use crate::scanless::G;
+use crate::result::*;
+
 pub struct R {
-  c: bool,
-  grammar: bool,
-  thick_g1_recce: bool,
-  p_input_string: bool,
-  exhaustion_action: String,
-  rejection_action: String,
-  trace_file_handle: bool,
-  trace_lexers: bool,
-  trace_terminals: bool,
-  read_string_error: bool,
-  events: bool,
+  pub c: bool,
+  pub grammar: G,
+  pub thick_g1_recce: bool,
+  pub p_input_string: bool,
+  pub exhaustion_action: String,
+  pub rejection_action: String,
+  pub trace_file_handle: bool,
+  pub trace_lexers: bool,
+  pub trace_terminals: bool,
+  pub read_string_error: bool,
+  pub events: bool,
 }
 
 impl Default for R {
   fn default() -> Self {
     R {
         c: false,
-        grammar: false,
+        grammar: G::default(),
         thick_g1_recce: false,
         p_input_string: false,
         exhaustion_action: String::new(),
@@ -31,10 +33,61 @@ impl Default for R {
   }
 }
 
+struct CommonNaifRecceArgs {
+  end: Option<bool>,
+  max_parses:Option<bool>,
+  semantics_package:Option<bool>,
+  too_many_earley_items:Option<bool>,
+  trace_actions: Option<bool>,
+  trace_file_handle: Option<bool>,
+  trace_terminals:Option<bool>,
+  trace_values:Option<bool>,
+}
+impl Default for CommonNaifRecceArgs {
+  fn default() -> Self {
+    CommonNaifRecceArgs { 
+      end: None,
+      max_parses: None,
+      semantics_package: None,
+      too_many_earley_items: None,
+      trace_actions: None,
+      trace_file_handle: None,
+      trace_terminals: None,
+      trace_values: None,
+    }
+  }
+}
+struct CommonSlifRecceArgs {
+  trace_lexers: Option<bool>,
+  rejection: Option<bool>,
+  exhaustion: Option<bool>
+}
+impl Default for CommonSlifRecceArgs {
+  fn default() -> Self {
+    CommonSlifRecceArgs {
+      trace_lexers: None,
+      rejection: None,
+      exhaustion: None
+    }
+  }
+}
+
+struct SetMethodArgs {
+  slif: CommonSlifRecceArgs,
+  naif: CommonNaifRecceArgs
+}
+struct NewMethodArgs {
+  grammar: Option<G>,
+  ranking_method: Option<bool>,
+  event_is_active: Option<bool>,
+  method_args: SetMethodArgs
+}
+type SeriesRestartMethodArgs = SetMethodArgs;
+
 impl R {
-  pub fn meta_recce() -> Self {
-    let meta_grammar = super::G::meta_grammar();
-    R::new(meta_grammar)
+  pub fn meta_recce() -> Result<Self> {
+    let meta_grammar = super::G::meta_grammar()?;
+    Ok(R::new(meta_grammar))
   }
 
 
@@ -48,29 +101,15 @@ impl R {
     slr.trace_lexers = false;
     slr.trace_terminals = false;
 
-    // my ($g1_recce_args, $flat_args) =
-    //     Marpa::R2::Internal::Scanless::R::set( $slr, "new", @args );
-    // my $too_many_earley_items = $g1_recce_args->{too_many_earley_items};
+    let (g1_recce_args, flat_args) =
+        slr.internal_set("new", grammar);
+    let too_many_earley_items = g1_recce_args.too_many_earley_items;
 
-    // my $slg = $slr->[Marpa::R2::Internal::Scanless::R::GRAMMAR];
+    let slg = &mut slr.grammar;
 
-    // Marpa::R2::exception(
-    //     qq{Marpa::R2::Scanless::R::new() called without a "grammar" argument}
-    // ) if not defined $slg;
+    let thick_g1_grammar = &slg.thick_g1_grammar;
 
-    // my $slg_class = 'Marpa::R2::Scanless::G';
-    // if ( not blessed $slg or not $slg->isa($slg_class) ) {
-    //     my $ref_type = ref $slg;
-    //     my $desc = $ref_type ? "a ref to $ref_type" : 'not a ref';
-    //     Marpa::R2::exception(
-    //         qq{'grammar' named argument to new() is $desc\n},
-    //         "  It should be a ref to $slg_class\n" );
-    // } //// end if ( not blessed $slg or not $slg->isa($slg_class) )
-
-    // my $thick_g1_grammar =
-    //     $slg->[Marpa::R2::Internal::Scanless::G::THICK_G1_GRAMMAR];
-
-    // my $trace_file_handle = $g1_recce_args->{trace_file_handle};
+    let trace_file_handle = &g1_recce_args.trace_file_handle;
     // $trace_file_handle //= $thick_g1_grammar->[Marpa::R2::Internal::Grammar::TRACE_FILE_HANDLE] ;
 
     // my $thick_g1_recce =
@@ -192,8 +231,142 @@ impl R {
     slr
   } //// end sub Marpa::R2::Scanless::R::new
 
+  // The context flag indicates whether this set is called directly by the user
+  // or is for series reset or the constructor.  "Context" flags of this kind
+  // are much decried practice, and for good reason, but in this case
+  // I think it is justified.
+  // This logic really needs to be all in one place, and so a flag
+  // to trigger the minor differences needed by the various calling
+  // contexts is a small price to pay.
+  fn internal_set(&mut self, method: &str, hash_ref_args: G) -> (CommonNaifRecceArgs,CommonNaifRecceArgs) {
+    // These NAIF recce args are allowed in all contexts
+    
+    // for my $args (@hash_ref_args) {
+    //     my $ref_type = ref $args;
+    //     if ( not $ref_type ) {
+    //         Marpa::R2::exception( q{$slr->}
+    //                 . $method
+    //                 . qq{() expects args as ref to HASH; got non-reference instead}
+    //         );
+    //     } //// end if ( not $ref_type )
+    //     if ( $ref_type ne 'HASH' ) {
+    //         Marpa::R2::exception( q{$slr->}
+    //                 . $method
+    //                 . qq{() expects args as ref to HASH, got ref to $ref_type instead}
+    //         );
+    //     } //// end if ( $ref_type ne 'HASH' )
+    // } //// end for my $args (@hash_ref_args)
+
+    let flat_args = CommonNaifRecceArgs::default();
+    // for my $hash_ref (@hash_ref_args) {
+    //     ARG: for my $arg_name ( keys %{$hash_ref} ) {
+    //         $flat_args{$arg_name} = $hash_ref->{$arg_name};
+    //     }
+    // }
+    // my $ok_args = $set_method_args;
+    // $ok_args = $new_method_args            if $method eq 'new';
+    // $ok_args = $series_restart_method_args if $method eq 'series_restart';
+    // my @bad_args = grep { not $ok_args->{$_} } keys %flat_args;
+    // if ( scalar @bad_args ) {
+    //     Marpa::R2::exception(
+    //         q{Bad named argument(s) to $slr->}
+    //             . $method
+    //             . q{() method: }
+    //             . join q{ },
+    //         @bad_args
+    //     );
+    // } //// end if ( scalar @bad_args )
+
+    // // Special SLIF (not NAIF) recce arg processing goes here
+    // if ( exists $flat_args{'exhaustion'} ) {
+
+    //     state $exhaustion_actions = { map { ( $_, 0 ) } qw(fatal event) };
+    //     my $value = $flat_args{'exhaustion'} // 'undefined';
+    //     Marpa::R2::exception(
+    //         qq{'exhaustion' named arg value is $value (should be one of },
+    //         (   join q{, },
+    //             map { q{'} . $_ . q{'} } keys %{$exhaustion_actions}
+    //         ),
+    //         ')'
+    //     ) if not exists $exhaustion_actions->{$value};
+    //     $slr->[Marpa::R2::Internal::Scanless::R::EXHAUSTION_ACTION] = $value;
+
+    // } //// end if ( exists $flat_args{'exhaustion'} )
+
+    // // Special SLIF (not NAIF) recce arg processing goes here
+    // if ( exists $flat_args{'rejection'} ) {
+
+    //     state $rejection_actions = { map { ( $_, 0 ) } qw(fatal event) };
+    //     my $value = $flat_args{'rejection'} // 'undefined';
+    //     Marpa::R2::exception(
+    //         qq{'rejection' named arg value is $value (should be one of },
+    //         (   join q{, },
+    //             map { q{'} . $_ . q{'} } keys %{$rejection_actions}
+    //         ),
+    //         ')'
+    //     ) if not exists $rejection_actions->{$value};
+    //     $slr->[Marpa::R2::Internal::Scanless::R::REJECTION_ACTION] = $value;
+
+    // } //// end if ( exists $flat_args{'rejection'} )
+
+    // // A bit hack-ish, but some named args are copies straight to an member of
+    // // the Scanless::R class, so this maps named args to the index of the array
+    // // that holds the members.
+    // state $copy_arg_to_index = {
+    //     trace_file_handle =>
+    //         Marpa::R2::Internal::Scanless::R::TRACE_FILE_HANDLE,
+    //     trace_lexers    => Marpa::R2::Internal::Scanless::R::TRACE_LEXERS,
+    //     trace_terminals => Marpa::R2::Internal::Scanless::R::TRACE_TERMINALS,
+    //     grammar         => Marpa::R2::Internal::Scanless::R::GRAMMAR,
+    // };
+
+    // ARG: for my $arg_name ( keys %flat_args ) {
+    //     my $index = $copy_arg_to_index->{$arg_name};
+    //     next ARG if not defined $index;
+    //     my $value = $flat_args{$arg_name};
+    //     $slr->[$index] = $value;
+    // } //// end ARG: for my $arg_name ( keys %flat_args )
+
+    // // Normalize trace levels to numbers
+    // for my $trace_level_arg (
+    //     Marpa::R2::Internal::Scanless::R::TRACE_TERMINALS,
+    //     Marpa::R2::Internal::Scanless::R::TRACE_LEXERS
+    //     )
+    // {
+    //     $slr->[$trace_level_arg] = 0
+    //         if
+    //         not Scalar::Util::looks_like_number( $slr->[$trace_level_arg] );
+    // } //// end for my $trace_level_arg ( ...)
+
+    // // Trace file handle can never be undefined
+    // if (not defined $slr->[Marpa::R2::Internal::Scanless::R::TRACE_FILE_HANDLE] )
+    // {
+    //     my $slg = $slr->[Marpa::R2::Internal::Scanless::R::GRAMMAR];
+    //     $slr->[Marpa::R2::Internal::Scanless::R::TRACE_FILE_HANDLE] =
+    //         $slg->[Marpa::R2::Internal::Scanless::G::TRACE_FILE_HANDLE];
+    // } //// end if ( not defined $slr->[...])
+
+    // // These NAIF recce args, when applicable, are simply copies of the the
+    // // SLIF args of the same name
+    // state $copyable_naif_recce_args = {
+    //     map { ( $_, 1 ); }
+    //         qw(end max_parses semantics_package too_many_earley_items ranking_method
+    //         trace_actions trace_file_handle trace_terminals trace_values)
+    // };
+
+    // // Prune flat args of all those named args which are NOT to be copied
+    // // into the NAIF recce args
+    let g1_recce_args = CommonNaifRecceArgs::default();
+    // for my $arg_name ( grep { $copyable_naif_recce_args->{$_} }
+    //     keys %flat_args )
+    // {
+    //     $g1_recce_args{$arg_name} = $flat_args{$arg_name};
+    // }
+
+    (g1_recce_args, flat_args)
+  } // end internal_set
 
   pub fn ambiguous(&self) -> Option<bool> { None } // TODO
   pub fn value(&self) -> Option<bool> { None } // TODO
-  pub fn read(&self, input: &str) -> Result<(),()> { Ok(()) } // TODO
+  pub fn read(&self, input: &str) -> Result<()> { Ok(()) } // TODO
 }
