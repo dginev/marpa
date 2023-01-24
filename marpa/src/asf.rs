@@ -118,13 +118,13 @@ impl ASF {
     let bocage = &mut self.bocage;
     let augment_or_node_id = bocage.top_or_node()?;
     let augment_and_node_id = self.or_nodes[augment_or_node_id as usize].nids[0];
-    let start_or_node_id = bocage.and_node_cause(augment_and_node_id as i32)?;
+    let start_or_node_id = bocage.and_node_cause(augment_and_node_id)?;
     let base_nidset = self.obtain_nidset(vec![start_or_node_id]);
     let glade_id = base_nidset.id;
     // Cannot "obtain" the glade if it is not registered
     let mut glade = self.glades.entry(glade_id).or_insert(Glade::default());
-    (*glade).registered = true;
-    self.obtain_glade(glade_id);
+    glade.registered = true;
+    self.obtain_glade(glade_id)?;
     Ok(glade_id)
   }
 
@@ -133,7 +133,7 @@ impl ASF {
     let glade  = self.glades.get(&glade_id)
                   .expect("Attempt to use an invalid glade");
     if !glade.registered {
-      panic!("attempt to use an unregistered glade with ID: {}", glade_id);
+      panic!("attempt to use an unregistered glade with ID: {glade_id}");
     }
     // Return the glade if it is already set up
     if !glade.symches.is_empty() {
@@ -245,7 +245,7 @@ impl ASF {
     }
     // precompute symbol id and set it on the glade
     let nidset       = self.nidset_by_id.get(&glade_id).unwrap_or_else(||
-      panic!("No glade found for glade ID {:?}", glade_id));
+      panic!("No glade found for glade ID {glade_id:?}"));
     let nid0         = nidset.get_nid(0);
     let symbol_id = self.nid_symbol_id(nid0)?;
 
@@ -296,7 +296,7 @@ impl ASF {
     if let Some(token_id) = self.nid_token_id(nid)? {
       return Ok(token_id);
     } else if nid < 0 {
-      return Err(format!("No symbol ID for node ID: {}", nid).into());
+      return Err(format!("No symbol ID for node ID: {nid}").into());
     }
 
     // Not a token, so return the LHS of the rule

@@ -36,7 +36,7 @@ where
     let tar_gz = File::open(path)?;
     let tar = GzDecoder::new(tar_gz);
     let mut archive = Archive::new(tar);
-    Ok(archive.unpack(out_dir)?)
+    archive.unpack(out_dir)
 }
 
 // extract a libmarpa tarball with the provided version. Returns the extracted
@@ -44,8 +44,8 @@ where
 //
 // Assumes that there's a libmarpa-VERSION.tar.gz in the crate root
 fn extract_libmarpa(version: &'static str) -> io::Result<PathBuf> {
-    let libmarpa_name: String = format!("libmarpa-{}", version);
-    let libmarpa_tarball = CRATE_ROOT.join(format!("{}.tar.gz", libmarpa_name));
+    let libmarpa_name: String = format!("libmarpa-{version}");
+    let libmarpa_tarball = CRATE_ROOT.join(format!("{libmarpa_name}.tar.gz"));
     println!("cargo:rerun-if-changed={}", libmarpa_tarball.display());
     extract_tar_gz(libmarpa_tarball, &*OUT_DIR)?;
     Ok(OUT_DIR.join(libmarpa_name))
@@ -83,7 +83,7 @@ where
 {
     let bindings = builder()
         .header(format!("{}", path.as_ref().join("marpa.h").display()))
-        .blacklist_type("max_align_t")
+        .blocklist_type("max_align_t")
         .generate()
         .map_err(|_| io::Error::new(io::ErrorKind::Other, "failed to generate bindings"))?;
 

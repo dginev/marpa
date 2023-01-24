@@ -17,14 +17,14 @@ impl Item {
     pub fn rule(self) -> thin::Rule {
         match self {
             Item::Rule(r) => r,
-            Item::Symbol(_) => panic!("rule called on non-rule Item: {:?}", self),
+            Item::Symbol(_) => panic!("rule called on non-rule Item: {self:?}"),
         }
     }
 
     pub fn symbol(self) -> thin::Symbol {
         match self {
             Item::Symbol(s) => s,
-            Item::Rule(_) => panic!("symbol called on non-symbol Item: {:?}", self),
+            Item::Rule(_) => panic!("symbol called on non-symbol Item: {self:?}"),
         }
     }
 }

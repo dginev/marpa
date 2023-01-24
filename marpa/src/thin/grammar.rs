@@ -411,7 +411,7 @@ impl Grammar {
             -2 => self.error_or("error getting completion event"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -421,7 +421,7 @@ impl Grammar {
             -2 => self.error_or("error setting completion event"),
             0 => Ok(()),
             1 => Ok(()),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -431,7 +431,7 @@ impl Grammar {
             -2 => self.error_or("error getting nulled event"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -441,7 +441,7 @@ impl Grammar {
             -2 => self.error_or("error setting nulled event"),
             0 => Ok(()),
             1 => Ok(()),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -451,7 +451,7 @@ impl Grammar {
             -2 => self.error_or("error getting prediction event"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -461,7 +461,7 @@ impl Grammar {
             -2 => self.error_or("error setting prediction event"),
             0 => Ok(()),
             1 => Ok(()),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -478,7 +478,7 @@ impl Grammar {
         match unsafe { marpa_g_precompute(self.internal) } {
             -2 => self.error_or("error precomputing grammar"),
             i if i >= 0 => Ok(()),
-            i => panic!("unexpected error code: {}", i),
+            i => panic!("unexpected error code: {i}"),
         }
     }
 
@@ -487,7 +487,7 @@ impl Grammar {
             -2 => self.error_or("error getting is_precomputed"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -496,7 +496,7 @@ impl Grammar {
             -2 => self.error_or("error getting has_cycle"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 }

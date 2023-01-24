@@ -36,7 +36,7 @@ where
                 self.size_stack(res as usize);
                 self.items[res as usize] = self.processor.proc_null(sym);
             }
-            s => panic!("Invalid step: {:?}", s),
+            s => panic!("Invalid step: {s:?}"),
         }
     }
 

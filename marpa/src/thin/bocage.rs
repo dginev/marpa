@@ -58,7 +58,7 @@ impl Bocage {
         match unsafe { marpa_b_ambiguity_metric(self.internal) } {
             i if i > 0 => Ok(i),
             -2 => self.grammar.error_or("error getting ambiguity"),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -67,21 +67,21 @@ impl Bocage {
             i if i >= 1 => Ok(true),
             0 => Ok(false),
             -2 => self.grammar.error_or("error getting bocage is_null"),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
     pub fn top_or_node(&self) -> Result<i32> {
         match unsafe { _marpa_b_top_or_node(self.internal) } {
             i if i > 0 => Ok(i),
-            code => Err(format!("failed to get top node in Bocage: {}", code).into())
+            code => Err(format!("failed to get top node in Bocage: {code}").into())
         }
     }
 
     pub fn or_node_irl(&self, node_id: i32) -> Result<i32> {
         match unsafe { _marpa_b_or_node_irl(self.internal, node_id) } {
             i if i > 0 => Ok(i),
-            code => Err(format!("failed to get or node irl in Bocage: {}", code).into())
+            code => Err(format!("failed to get or node irl in Bocage: {code}").into())
         }
     }
 
@@ -90,14 +90,14 @@ impl Bocage {
         // if the NID is for a token and-node.
         match unsafe { _marpa_b_and_node_cause(self.internal, node_id) } {
             i if i > -2 => Ok(i),
-            code => Err(format!("failed to get and_node (id {}) cause in Bocage: {}", node_id, code).into())
+            code => Err(format!("failed to get and_node (id {node_id}) cause in Bocage: {code}").into())
         }
     }
 
     pub fn and_node_symbol(&self, node_id:i32) -> Result<i32> {
         match unsafe { _marpa_b_and_node_symbol(self.internal, node_id) } {
             i if i > -2 => Ok(i),
-            code => Err(format!("failed to get and_node symbol in Bocage: {}", code).into())
+            code => Err(format!("failed to get and_node symbol in Bocage: {code}").into())
         }
     }
     pub fn and_node_predecessor(&self, node_id:i32) -> Option<i32> {
@@ -108,7 +108,7 @@ impl Bocage {
     }
 
     pub fn get_ordering(&self) -> Option<Order> {
-        match Order::new(&self) {
+        match Order::new(self) {
             Ok(o) => Some(o),
             _ => None
         }

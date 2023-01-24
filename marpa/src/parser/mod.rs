@@ -75,9 +75,9 @@ impl Parser {
                 Recognizer::new(self.grammar.clone()).map(R)
             }
             GReady => Recognizer::new(self.grammar.clone()).map(R),
-            R(ref r) => Bocage::new(&r).map(B),
+            R(ref r) => Bocage::new(r).map(B),
             B(ref b) => {
-                Order::new(&b).map(O)
+                Order::new(b).map(O)
             },
             O(ref o) => Tree::new(o.clone()).map(T),
             T(_) => Ok(GReady),

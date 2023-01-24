@@ -23,13 +23,13 @@ impl ::std::error::Error for Error {
 impl ::std::fmt::Display for Error {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
         use std::error::Error;
-        write!(f, "{}", self.description())
+        write!(f, "{}",self.description())
     }
 }
 
 impl ::std::fmt::Debug for Error {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -37,7 +37,7 @@ impl From<u32> for Error {
     fn from(other: u32) -> Error {
         match other {
             i if (i as usize) < MARPA_ERROR_DESCRIPTION.len() => Error(i, None),
-            i => Error(i, Some(format!("undefined error: {}", i))),
+            i => Error(i, Some(format!("undefined error: {i}"))),
         }
     }
 }
