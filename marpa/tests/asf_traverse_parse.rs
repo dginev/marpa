@@ -36,6 +36,81 @@ fn asf_traverse_parse() {
     assert!(runner_result.is_ok(), "failed to run asf traversal: {:?}", runner_result.err());
 }
 
+/// Pin-down test for the ASF traversal scaffolding state (2026-05-17).
+///
+/// Today the panda grammar admits 3 parses (validated by
+/// `recce_parse_sanity`), and `ASF::traverse` invokes the supplied
+/// `Traverser::traverse_glade` exactly once on the peak glade. The
+/// `Glade` exposed to the traverser:
+///
+/// * has a non-trivial `id()` (set by `ASF::peak` → `obtain_nidset`),
+/// * has a `symbol_id()` corresponding to the grammar's start symbol,
+/// * reports `symch_count() == 0` (the inner factoring loop is not yet
+///   ported from Perl — see `ASF_STATUS.md` Step 2),
+/// * reports `is_factored() == false` (same reason).
+///
+/// When Step 2 lands, the assertions about symch_count / is_factored
+/// will need to be revised — that's the point of pinning down the
+/// scaffolding state explicitly.
+#[test]
+fn asf_peak_glade_scaffolding_pin_down() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let (mut parser, _b, _rule_names) = build_grammar().expect("grammar build should succeed");
+
+    let invocation_count = Rc::new(Cell::new(0usize));
+    let observed_symbol_id = Rc::new(Cell::new(-99i32));
+    let observed_symch_count = Rc::new(Cell::new(usize::MAX));
+    let observed_is_factored = Rc::new(Cell::new(true));
+    let observed_id_nonzero = Rc::new(Cell::new(false));
+
+    parser
+        .parse_and_traverse_forest(
+            ByteScanner::new(Cursor::new(PANDA_INPUT)),
+            (),
+            Box::new(PinDownTraverser {
+                invocation_count: invocation_count.clone(),
+                observed_symbol_id: observed_symbol_id.clone(),
+                observed_symch_count: observed_symch_count.clone(),
+                observed_is_factored: observed_is_factored.clone(),
+                observed_id_nonzero: observed_id_nonzero.clone(),
+            }),
+        )
+        .expect("traverse should succeed");
+
+    assert_eq!(
+        invocation_count.get(),
+        1,
+        "traverse_glade should be called exactly once on the peak (recursion is Step 5)"
+    );
+    assert!(observed_symbol_id.get() >= 0, "peak glade should have a valid (>= 0) symbol_id");
+    assert!(observed_id_nonzero.get(), "peak glade id should be non-zero (a valid nidset_id)");
+    assert_eq!(observed_symch_count.get(), 0, "symches are unpopulated until ASF_STATUS Step 2 lands");
+    assert!(!observed_is_factored.get(), "is_factored is always false until Step 2 lands");
+}
+
+struct PinDownTraverser {
+    invocation_count: std::rc::Rc<std::cell::Cell<usize>>,
+    observed_symbol_id: std::rc::Rc<std::cell::Cell<i32>>,
+    observed_symch_count: std::rc::Rc<std::cell::Cell<usize>>,
+    observed_is_factored: std::rc::Rc<std::cell::Cell<bool>>,
+    observed_id_nonzero: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
+impl Traverser for PinDownTraverser {
+    type ParseTree = ();
+    type ParseState = ();
+    fn traverse_glade(&self, glade: &mut Glade, _state: Self::ParseState) -> Result<(Self::ParseTree, Self::ParseState)> {
+        self.invocation_count.set(self.invocation_count.get() + 1);
+        self.observed_symbol_id.set(glade.symbol_id());
+        self.observed_symch_count.set(glade.symch_count());
+        self.observed_is_factored.set(glade.is_factored());
+        self.observed_id_nonzero.set(glade.id() != 0);
+        Ok(((), ()))
+    }
+}
+
 fn runner_asf_traverse() -> Result<Vec<String>> {
     let (mut parser, _b, rule_names) = build_grammar().expect("grammar build should succeed, not core part of test");
     // Now that we have validated the panda grammar is correctly ambiguous,
@@ -128,11 +203,11 @@ impl Traverser for ExhaustiveTraverser {
     fn traverse_glade(&self, glade: &mut Glade, _state: Self::ParseState) -> Result<(Self::ParseTree, Self::ParseState)> {
         // This routine converts the glade into a list of Penn-tagged elements.
         // It is called recursively.
-        let rule_id = dbg!(glade.rule_id());
+        let glade_id = dbg!(glade.id());
         let _symbol_id = dbg!(glade.symbol_id());
 
         // A token is a single choice, and we know enough to fully Penn-tag it
-        if rule_id == 0 {
+        if glade_id == 0 {
             //   let literal  = glade.literal();
             //   let penn_tag = penn_tag.get(symbol_id);
             //   return Ok(vec![format!("({} {})",penn_tag, literal)]);
