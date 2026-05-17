@@ -38,7 +38,7 @@ impl TreeBuilder {
         self.discard_rules.insert(rule_id);
     }
 
-    pub fn is_discard(&mut self, rule_id: Rule) -> bool {
+    pub fn is_discard(&self, rule_id: Rule) -> bool {
         self.discard_rules.contains(&rule_id)
     }
 }
