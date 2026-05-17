@@ -1,8 +1,12 @@
 # ASF Traversal — Status & Completion Plan
 
-> Audit performed 2026-05-17 across the 17 commits on
-> `abstract_syntax_forests` that aren't on `master`. The work is
-> **scaffolding-stage**, not feature-complete.
+> **Status 2026-05-17**: Steps 2-6 landed on branch
+> `asf-step2-symches`. `compute_symches` is fully ported (with Perl-
+> faithful predecessor-group unification), the `Traverser` trait was
+> redesigned around post-order memoization, and the panda grammar's
+> 3 distinct parses are validated via a substantive
+> `ExhaustiveTraverser` test. **Step 7 (downstream latexml-oxide
+> consumption) is the remaining open work.**
 >
 > **Downstream context**: the primary consumer of this ASF
 > infrastructure is [latexml-oxide](https://github.com/dginev/latexml-oxide),
@@ -31,99 +35,123 @@ The state machine around the libmarpa primitives works end-to-end:
 
 ## What's scaffolding (types and method signatures exist; bodies are stubs)
 
-| Component | File / Line | What's there | What's missing |
-|---|---|---|---|
-| `ASF::new` | `src/asf.rs:67-105` | Walks the bocage, populates `or_nodes: Vec<Nidset>`. | nothing missing **for construction** itself — but `glades`, `powerset_by_id`, `intset_by_key` are intentionally left empty, populated lazily by `obtain_glade`. |
-| `ASF::peak` | `src/asf.rs:113-124` | Discovers the start-rule glade by chasing `bocage.top_or_node()` → `and_node_cause()`. | Works. |
-| `ASF::obtain_glade` | `src/asf.rs:126-137` | Returns cached glade if `symches` already populated, else calls `compute_symches`. | Works. |
-| `ASF::compute_symches` | `src/asf.rs:139-211` | Sorts source nids by `nid_sort_ix`, partitions by sort_ix to build symch_ids, calls `obtain_powerset`. | **Inner symch loop body is commented-out Perl** (lines 165-210). `symches` always ends as `Vec::new()`. No factoring stack, no choicepoint navigation. |
-| `ASF::traverse` | `src/asf.rs:107-111` | Computes peak glade, calls `traverser.traverse_glade(peak_glade, init_state)` **once**. | Recursion into child glades is missing. Iteration over symches is missing. |
-| `Glade::rule_id` | `src/asf/glade.rs:25-27` | Returns `self.id`. | **BUG**: `id` is the glade-id (= nidset-id), not the rule-id. Should call `nid_rule_id(asf, nid0)` against the underlying nidset. |
-| `Glade::symbol_id` | `src/asf/glade.rs:29-31` | Returns precomputed `symbol_id`. | Works (set in `compute_symches:201`). |
-| `Glade` — other methods | `src/asf/glade.rs` | Only `rule_id` (buggy) + `symbol_id`. | Missing: `literal()`, `rh_length()`, `rh_value(ix)`, `next()`, `is_factored()`, `symch_count()`, `factor_count()`, `rh_glade_id(ix)`. |
-| `Traverser` trait | `src/asf.rs:12-17` | Trait with `traverse_glade(glade, state) -> (ParseTree, ParseState)`. | The trait shape is fine; what's missing is the **recursive driver** in `ASF::traverse` that walks the glade tree and threads state through child traversals. |
+**Status as of branch `asf-step2-symches`** — most rows in the prior
+audit table have been retired by Step 2 + Step 5.
 
-## What the existing `asf_traverse_parse` test actually proves
+| Component | File / Line | Status |
+|---|---|---|
+| `ASF::new` | `src/asf.rs` | ✅ |
+| `ASF::peak` | `src/asf.rs` | ✅ |
+| `ASF::obtain_glade` | `src/asf.rs` | ✅ |
+| `ASF::compute_symches` | `src/asf.rs` | ✅ Step 2 — factoring loop ported from Perl `ASF.pm` with predecessor-group unification (`set_last_choice` semantics). Mirrors `glade_obtain` lines 838-965. |
+| `ASF::traverse` | `src/asf.rs` | ✅ Step 5 — post-order recursive driver with `HashMap<glade_id, PT>` memoization. Each glade fires the user callback exactly once. |
+| `Glade::rule_id` | `src/asf/glade.rs` | ✅ Step 3 — reads from current symch's `rule_id` field. |
+| `Glade::symbol_id` | `src/asf/glade.rs` | ✅ |
+| `Glade::symch_count`, `factor_count`, `is_factored`, `rh_length`, `rh_glade_id`, `next`, `rewind`, `is_token`, `cursor`, `symches()` | `src/asf/glade.rs` | ✅ Step 4 |
+| `Glade::literal` (token-glade input span) | — | **deferred** — needs SLR; latexml-oxide math parser doesn't need text spans (token-stream consumer). |
+| `Traverser` trait | `src/asf.rs` | ✅ Step 5 — redesigned to `fn(&mut self, &mut Glade, &HashMap<usize, PT>, &mut PS) -> Result<PT>`. |
 
-```rust
-let runner_result = runner_asf_traverse();
-assert!(runner_result.is_ok(), "failed to run asf traversal: {:?}", ...);
-```
+## What the panda tests prove (post-Steps 2-6)
 
-The test only asserts the call doesn't panic. Inside, `runner_asf_traverse` calls `parse_and_traverse_forest` twice with two no-op traversers (`ExhaustiveTraverser` and `PruningTraverser` both return `Ok(((), ()))`). With `symches` always empty, the traverser is invoked **exactly once on the peak glade**, with no recursion. So the test currently proves only:
-
-1. `Parser::read` consumes the panda input without error.
-2. `ASF::new` completes for a 3-parse grammar.
-3. `ASF::peak` finds a glade.
-4. `Traverser::traverse_glade` is invoked exactly once with valid `rule_id` (currently == glade_id, not rule_id) and `symbol_id` arguments.
-
-It does **not** prove that distinct parses are enumerated, that factorings are explored, or that pruning works.
+* **`recce_parse_sanity`** — recognizer-only path admits 3 parses.
+* **`ambiguity_metric_oracle_reports_ambiguous`** — pre-flight oracle returns 2.
+* **`ambiguity_metric_oracle_reports_unambiguous`** — single-rule grammar returns 1.
+* **`asf_three_parses_via_exhaustive_traverser`** — substantive: post-order recursion + memoized `Vec<String>` Cartesian product produces exactly **3 distinct Penn-tagged strings**. This is the load-bearing verification that Steps 2 + 5 work end-to-end.
+* **`asf_peak_glade_scaffolding_pin_down`** — invariants:
+  * each glade fires exactly once (memoization),
+  * an S-shape glade exists (4 RHS positions, 1 symch),
+  * a unified-VP-shape glade exists (3 symches, 1 factoring each).
+* **`asf_traverse_parse`** — smoke test for both ExhaustiveTraverser and PruningTraverser.
 
 ## Completion plan
 
 In priority order. Each step is testable against the panda grammar (3 parses, all distinct via NN/NNS/CC factoring).
 
-### Step 1 — Lock in current behavior with a pin-down test
+### Step 1 — ✅ Pin-down test for scaffolding state — LANDED
 
-Before completing missing logic, capture exactly what the existing 13 tests + 1 new test prove, so future refactors can't silently regress the scaffolding. **Land first** (test added in this branch).
+(commit `79af103` on prior `asf-completion`).
 
-### Step 2 — Port `compute_symches` factoring loop from Perl `Marpa::R2::ASF`
+### Step 2 — ✅ Port `compute_symches` factoring loop — LANDED
 
-Source: `MARPA_R2/Marpa/R2/ASF.pm`, the `SYMCH:` loop body and the
-`Marpa::R2::Choicepoint` helpers (`first_factoring`,
-`next_factoring`, `glade_id_factors`, `nid_rule_id`).
+Branch `asf-step2-symches`, commit `4c84d7e`. Source: `MARPA_R2/
+Marpa/R2/ASF.pm`, the `SYMCH:` loop body. Notable nuance: the Perl
+`set_last_choice` + `and_nodes_to_cause_nids` extends contiguous
+same-predecessor and-nodes into one nook covering FIRST..LAST and
+unifies their causes into a single multi-nid nidset — i.e. multi-
+source glade. This unification is faithfully ported and is what
+keeps `S` at 1 factoring (with the panda ambiguity localized in
+the unified-VP glade) instead of 3 factorings at the top.
 
-Outcome: `Glade::symches` gets populated with `Vec<usize>` of symch-ids; each symch carries a factoring list.
+### Step 3 — ✅ Fix `Glade::rule_id` — LANDED (piggy on Step 2)
 
-### Step 3 — Fix `Glade::rule_id`
+`Glade::rule_id` now reads from `self.symches[cursor.symch_ix].rule_id`. The rule_id lives on the symch (where it conceptually belongs), not on the glade.
 
-The current `self.id` return is the **nidset-id**, not the **rule-id**. Replace with a call that, for a non-token nid, walks `nid → or_node_irl → source_xrl` to recover the XRL id (= rule id). For a token nid (`nid < NID_LEAF_BASE`), return a sentinel like `0` or `-1` per Perl convention.
+### Step 4 — ✅ Most of the `Glade` query API — LANDED (piggy on Step 2)
 
-### Step 4 — Add the rest of the `Glade` query API
+Implemented: `symch_count`, `factor_count`, `is_factored`, `rh_length`, `rh_glade_id`, `next`, `rewind`, `is_token`, `cursor`, `symches()`. Deferred: `literal()` (needs SLR span lookup; latexml-oxide math parser doesn't need it).
 
-| Method | Returns | Wraps |
-|---|---|---|
-| `literal(&self) -> &[u8]` | Token bytes for token-glades | Recognizer input span lookup |
-| `rh_length(&self) -> usize` | RHS length of the chosen symch's chosen factoring | Factoring stack inspection |
-| `rh_value(&self, ix: usize) -> Vec<Handle>` | Children at RHS position `ix` | Recursion into child glades |
-| `rh_glade_id(&self, ix: usize) -> usize` | Glade id at RHS position `ix` | Factoring stack lookup |
-| `next(&mut self) -> Option<()>` | Advance to next factoring within current symch | `next_factoring(choicepoint, nid)` |
-| `symch_count(&self) -> usize` | How many symches | `self.symches.len()` |
-| `factor_count(&self) -> usize` | How many factorings on current symch | Factoring stack height |
-| `is_factored(&self) -> bool` | True if current symch has > 1 factoring | `factor_count() > 1` |
+### Step 5 — ✅ Recursive `ASF::traverse` — LANDED
 
-### Step 5 — Make `ASF::traverse` recursive
+Branch `asf-step2-symches`, commit `e32619c`. The driver walks the
+bocage in post-order; each glade fires the user callback exactly
+once and child outputs are memoized in `HashMap<glade_id, PT>`.
+Cycle-safe via the `visited` flag (defensive — honest bocages are
+acyclic).
 
-Current body invokes `traverse_glade` once on the peak. The real driver needs to:
+The `Traverser` trait was redesigned:
 
-1. For each symch in the glade, for each factoring of that symch, recurse into each child glade via `rh_value(ix)`.
-2. Thread `ParseState` through the recursion per the trait's signature.
-3. Honor a `Glade::visited` flag (the field exists at `src/asf/glade.rs:9` but is dead code today) to avoid re-traversing shared sub-glades.
-
-### Step 6 — Replace the no-op test with a substantive test
-
-Goal: ExhaustiveTraverser should produce exactly **3 distinct Penn-tagged strings** for the panda sentence, matching the Marpa::R2 reference output:
-
+```rust
+pub trait Traverser {
+  type ParseTree;
+  type ParseState;
+  fn traverse_glade(
+    &mut self,
+    glade: &mut Glade,
+    children: &HashMap<usize, Self::ParseTree>,
+    state: &mut Self::ParseState,
+  ) -> Result<Self::ParseTree>;
+}
 ```
-(S (NP a panda) (VP eats (NP shoots and leaves)) .)
-(S (NP a panda) (VP (VP eats shoots) and (VP leaves)) .)
-(S (NP a panda) (VP eats (NN shoots) and (NN leaves)) .)
-```
-(or whatever set Marpa::R2 yields against this grammar — needs to be regenerated as the reference.)
 
-The PruningTraverser should pick one specific factoring (e.g. always the leftmost branch) and produce exactly 1 result.
+Single-threaded by design (no Send/Sync bounds, no Arc/Mutex) —
+aligned with latexml-oxide's `#[thread_local]` state model.
 
-### Step 7 — Apply to downstream latexml-oxide ambiguity reduction
+### Step 6 — ✅ Substantive 3-parse test — LANDED
 
-Once Steps 2-6 land, the latexml-oxide math parser can use `parse_and_traverse_forest` with a custom pruning traverser to cut the post-parse tree-enumeration cost. Currently latexml-oxide's marpa wrapper iterates all parse trees up to a 5000-cap before applying pragma rules; with ASF pruning, semantic constraints can prune at each glade, eliminating combinatorial blowup before it materializes.
+`asf_three_parses_via_exhaustive_traverser` in
+`marpa/tests/asf_traverse_parse.rs` verifies that
+`ExhaustiveTraverser` produces exactly **3 distinct Penn-tagged
+strings** for the panda sentence. The traverser does a per-glade
+Cartesian product across RHS children, reading already-memoized
+child outputs from the `children` HashMap.
+
+### Step 7 — ⏳ Apply to downstream latexml-oxide ambiguity reduction
+
+Open. Tracked in
+[latexml-oxide:docs/MATH_PARSER_AND_ASF.md](https://github.com/dginev/latexml-oxide/blob/master/docs/MATH_PARSER_AND_ASF.md)
+under "Sequencing". Concretely:
+
+1. Switch latexml-oxide's `Cargo.toml` marpa dep to the
+   merged-master branch with this ASF work.
+2. Refactor `latexml_math_parser::semantics::Actions::action_on`
+   signature: `Vec<Option<XM>>` → `(alternatives, &cached_children, ...)`.
+3. Rewrite `latexml_math_parser::parser::parse_string`'s tree-
+   iteration loop as a `parse_and_traverse_forest` call.
+4. Delete 5 of the 6 convergence caps (only `max_time` should
+   remain — the rest are bandages against per-tree cost that
+   memoization removes).
 
 ## Effort estimate
 
-- Step 1 — 30 min (committed; pin-down test + Glade API cleanup +
-  `Parser::ambiguity_metric` pre-flight oracle).
-- Steps 2-5 — 1-2 weeks of focused porting + testing. The Perl source is ~500 lines in `ASF.pm` plus `~Choicepoint.pm`; needs Rust ownership/borrowing rewrite (factoring stack with shared glade references is the tricky bit).
-- Step 6 — 1 day, gated on Steps 2-5.
-- Step 7 — separate effort in the latexml-oxide repo.
+- Step 1 — ✅ 30 min — done (commit `79af103`).
+- Steps 2-6 — ✅ ~1 session — done (commits `4c84d7e`, `e32619c`).
+  The estimated 1-2 weeks was overcautious; the Rust port came
+  together cleanly because we collapsed the Perl nook-stack
+  iterator into a single eager DFS that materializes the full
+  symch+factoring structure up-front. The trade-off is more memory
+  per glade (we hold the whole symch list, not an iterator state),
+  but that's bounded by `factoring_max = 42` per Perl's default.
+- Step 7 — ⏳ open. Tracked in latexml-oxide.
 
 ## Target Rust API (sketch, derived from Marpa::R2::ASF docs)
 
