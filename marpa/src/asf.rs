@@ -9,11 +9,34 @@ use crate::thin::{Bocage, Order, Recognizer};
 pub use self::glade::*;
 pub use self::nidset::*;
 
+/// User callback for ASF traversal.
+///
+/// The driver walks the bocage in post-order: child glades are
+/// evaluated first and their `ParseTree` outputs are memoized; then
+/// the parent glade's `traverse_glade` is called with the children's
+/// outputs already available in `children`. This makes the cost
+/// **O(glades)** rather than **O(trees)** — the central reason this
+/// crate exists.
+///
+/// The user iterates `(symch, factoring)` combinations inside the
+/// callback by calling `glade.next()`; for each combination,
+/// `glade.rh_length()` and `glade.rh_glade_id(ix)` describe the RHS
+/// positions, and the corresponding child outputs are looked up in
+/// `children` by glade id.
+///
+/// `state` is a shared mutable scratchpad threaded through the whole
+/// traversal (e.g. for accumulators, deterministic counters, error
+/// flags). Mirrors Perl `Marpa::R2::ASF`'s `$scratch_ref`.
 pub trait Traverser {
   type ParseTree;
   type ParseState;
 
-  fn traverse_glade(&self, glade: &mut Glade, state: Self::ParseState) -> Result<(Self::ParseTree, Self::ParseState)>;
+  fn traverse_glade(
+    &mut self,
+    glade: &mut Glade,
+    children: &HashMap<usize, Self::ParseTree>,
+    state: &mut Self::ParseState,
+  ) -> Result<Self::ParseTree>;
 }
 
 // `Powerset` and `or_nodes` are scaffolding for the in-progress
@@ -94,10 +117,94 @@ impl ASF {
     })
   }
 
-  pub fn traverse<PT, PS>(&mut self, init_state: PS, traverser: Box<dyn Traverser<ParseTree = PT, ParseState = PS>>) -> Result<(PT, PS)> {
+  /// Run a `Traverser` over the parse forest in post-order with
+  /// per-glade memoization. The user callback is invoked exactly
+  /// once per reachable glade; child outputs are already in
+  /// `children` by the time the parent fires.
+  ///
+  /// Returns `(peak_output, final_state)` once the peak glade has
+  /// been evaluated.
+  pub fn traverse<PT, PS>(
+    &mut self,
+    mut init_state: PS,
+    mut traverser: Box<dyn Traverser<ParseTree = PT, ParseState = PS>>,
+  ) -> Result<(PT, PS)>
+  where
+    PT: Clone,
+  {
     let peak = self.peak()?;
-    let peak_glade = self.obtain_glade(peak)?;
-    traverser.traverse_glade(peak_glade, init_state)
+    let mut cache: HashMap<usize, PT> = HashMap::new();
+    let output = self.traverse_glade_recursive(peak, &mut cache, &mut *traverser, &mut init_state)?;
+    Ok((output, init_state))
+  }
+
+  /// Post-order recursive driver. Visits each child glade once
+  /// (memoized in `cache`); cycle-safe via the `visited` flag.
+  fn traverse_glade_recursive<PT, PS>(
+    &mut self,
+    glade_id: usize,
+    cache: &mut HashMap<usize, PT>,
+    traverser: &mut dyn Traverser<ParseTree = PT, ParseState = PS>,
+    state: &mut PS,
+  ) -> Result<PT>
+  where
+    PT: Clone,
+  {
+    if let Some(cached) = cache.get(&glade_id) {
+      return Ok(cached.clone());
+    }
+
+    // Ensure the glade's symches are populated, then enumerate the
+    // distinct child glade ids reachable from any (symch, factoring,
+    // RHS position). We grab them up-front so the recursion doesn't
+    // hold a borrow into `self.glades`.
+    self.obtain_glade(glade_id)?;
+    let child_ids: Vec<usize> = {
+      let glade = self.glades.get(&glade_id).unwrap();
+      let mut seen: Vec<usize> = Vec::new();
+      for symch in &glade.symches {
+        for factoring in &symch.factorings {
+          for &cid in factoring {
+            // Skip the self-referential factoring of a token glade.
+            if cid == glade_id {
+              continue;
+            }
+            if !seen.contains(&cid) {
+              seen.push(cid);
+            }
+          }
+        }
+      }
+      seen
+    };
+
+    // Mark the parent visited up-front so a cycle (cousin pointing
+    // back through us) doesn't recurse infinitely. Honest acyclic
+    // bocages won't hit this, but defensive.
+    if let Some(g) = self.glades.get_mut(&glade_id) {
+      g.visited = true;
+    }
+
+    // Recurse into each child (post-order).
+    for child_id in child_ids {
+      if cache.contains_key(&child_id) {
+        continue;
+      }
+      let child_output = self.traverse_glade_recursive(child_id, cache, traverser, state)?;
+      cache.insert(child_id, child_output);
+    }
+
+    // Now the parent's children are all in `cache`. Hand the parent
+    // glade to the user callback. Rewind the cursor so the user can
+    // iterate (symch, factoring) from the start.
+    let glade = self
+      .glades
+      .get_mut(&glade_id)
+      .expect("glade entry must exist after obtain_glade");
+    glade.rewind();
+    let output = traverser.traverse_glade(glade, cache, state)?;
+    cache.insert(glade_id, output.clone());
+    Ok(output)
   }
 
   /// Cheap pre-flight check: 1 = unambiguous, 2 = ambiguous.

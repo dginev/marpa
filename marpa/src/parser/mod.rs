@@ -129,7 +129,12 @@ impl Parser {
 
     /// This is roughly equivalent to `$asf->traverse` in Marpa::R2,
     /// but the ASF details are hidden under the hood.
-    pub fn parse_and_traverse_forest<T: TokenSource<U>, U: Token, PT, PS>(
+    ///
+    /// `PT: Clone` because the recursive driver memoizes each glade's
+    /// output and may hand the same value to multiple parents (shared
+    /// sub-glades in the DAG). Wrap expensive types in `Rc` / `Arc`
+    /// if cloning is costly.
+    pub fn parse_and_traverse_forest<T: TokenSource<U>, U: Token, PT: Clone, PS>(
         &mut self,
         tokens: T,
         init_state: PS,
