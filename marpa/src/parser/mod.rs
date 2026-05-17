@@ -144,4 +144,30 @@ impl Parser {
             panic!("Parser::read must always terminate in the R state!");
         }
     }
+
+    /// Cheap ambiguity oracle: scan `tokens`, build the bocage, return its
+    /// ambiguity metric, and reset the parser to `GReady` for reuse.
+    ///
+    /// The returned value follows libmarpa's `marpa_b_ambiguity_metric`:
+    ///
+    /// * `1` — unambiguous (exactly one parse tree).
+    /// * `2` — ambiguous (two or more parse trees). The exact count is
+    ///   only obtainable by iterating `run_recognizer` to exhaustion or
+    ///   walking the ASF.
+    ///
+    /// Use this as a fast pre-flight check before deciding whether to
+    /// commit to full tree enumeration. Avoids the cost of building the
+    /// Order + Tree iterator when the caller only needs to know "is this
+    /// ambiguous at all?".
+    pub fn ambiguity_metric<T: TokenSource<U>, U: Token>(&mut self, tokens: T) -> Result<i32> {
+        self.read(tokens)?;
+        let metric = {
+            let r = get_state!(self, R);
+            let bocage = Bocage::new(r)?;
+            bocage.ambiguity_metric()?
+        };
+        // Restore the parser to a clean state for the next parse call.
+        self.state = GReady;
+        Ok(metric)
+    }
 }

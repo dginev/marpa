@@ -30,6 +30,39 @@ fn recce_parse_sanity() {
     assert_eq!(parse_count, 3, "panda sentence should have three parses with run_recognizer.");
 }
 
+/// `Parser::ambiguity_metric` returns 2 (libmarpa's "ambiguous" sentinel)
+/// without iterating the parse forest — useful as a pre-flight check.
+///
+/// Note: the value is 2 even though the grammar admits 3 parses;
+/// libmarpa's metric distinguishes "unambiguous (=1)" from "ambiguous
+/// (=2)" but does not return the actual parse count. Use
+/// `run_recognizer` if you need the exact number.
+#[test]
+fn ambiguity_metric_oracle_reports_ambiguous() {
+    let (mut parser, _b, _rule_names) = build_grammar().expect("grammar build should succeed");
+    let metric = parser
+        .ambiguity_metric(ByteScanner::new(Cursor::new(PANDA_INPUT)))
+        .expect("ambiguity_metric should succeed");
+    assert_eq!(metric, 2, "panda sentence is ambiguous → metric == 2");
+}
+
+/// `Parser::ambiguity_metric` returns 1 on an unambiguous grammar.
+///
+/// Constructs a one-rule grammar `S ::= a` and feeds it the single
+/// character 'a' — exactly one parse, so metric == 1.
+#[test]
+fn ambiguity_metric_oracle_reports_unambiguous() {
+    let mut g = Grammar::new().expect("grammar new");
+    let a = g.literal_string(None, "a").expect("literal a");
+    let s = g.rule(None, &[a]).expect("rule S ::= a");
+    g.set_start(s).expect("set_start");
+    let mut parser = Parser::with_grammar(g.unwrap());
+    let metric = parser
+        .ambiguity_metric(ByteScanner::new(Cursor::new("a")))
+        .expect("ambiguity_metric should succeed");
+    assert_eq!(metric, 1, "single-rule grammar with one parse → metric == 1");
+}
+
 #[test]
 fn asf_traverse_parse() {
     let runner_result = runner_asf_traverse();
