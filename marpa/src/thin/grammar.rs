@@ -54,6 +54,10 @@ impl Grammar {
         }
     }
 
+    pub fn internal(&self) -> Marpa_Grammar {
+        self.internal
+    }
+
     // either return the error result from the grammar or an empty Ok
     fn error(&self) -> Result<()> {
         match unsafe { marpa_g_error(self.internal, ptr::null_mut()) as _ } {
@@ -386,13 +390,27 @@ impl Grammar {
         }
     }
 
+    pub fn source_xrl(&self, irl_id: i32) -> Result<i32> {
+        match unsafe { _marpa_g_source_xrl(self.internal, irl_id) } {
+            i if i < 0 => self.error_or("error getting source xrl"),
+            i => Ok(i),
+        }
+    }
+
+    pub fn source_xsy(&self, id: i32) -> Result<i32> {
+        match unsafe { _marpa_g_source_xsy(self.internal, id) } {
+            i if i < 0 => self.error_or("error getting source xrl"),
+            i => Ok(i),
+        }
+    }
+
     pub fn symbol_is_completion_event(&mut self, sym: Symbol) -> Result<bool> {
         match unsafe { marpa_g_symbol_is_completion_event(self.internal, sym) } {
             -1 => err_nosym(),
             -2 => self.error_or("error getting completion event"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -402,7 +420,7 @@ impl Grammar {
             -2 => self.error_or("error setting completion event"),
             0 => Ok(()),
             1 => Ok(()),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -412,7 +430,7 @@ impl Grammar {
             -2 => self.error_or("error getting nulled event"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -422,7 +440,7 @@ impl Grammar {
             -2 => self.error_or("error setting nulled event"),
             0 => Ok(()),
             1 => Ok(()),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -432,7 +450,7 @@ impl Grammar {
             -2 => self.error_or("error getting prediction event"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -442,7 +460,7 @@ impl Grammar {
             -2 => self.error_or("error setting prediction event"),
             0 => Ok(()),
             1 => Ok(()),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -459,7 +477,7 @@ impl Grammar {
         match unsafe { marpa_g_precompute(self.internal) } {
             -2 => self.error_or("error precomputing grammar"),
             i if i >= 0 => Ok(()),
-            i => panic!("unexpected error code: {}", i),
+            i => panic!("unexpected error code: {i}"),
         }
     }
 
@@ -468,7 +486,7 @@ impl Grammar {
             -2 => self.error_or("error getting is_precomputed"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -477,8 +495,14 @@ impl Grammar {
             -2 => self.error_or("error getting has_cycle"),
             0 => Ok(false),
             1 => Ok(true),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
+    }
+}
+
+impl From<Config> for Result<Grammar> {
+    fn from(other: Config) -> Self {
+        Grammar::with_config(other)
     }
 }
 
@@ -515,13 +539,13 @@ mod tests {
             g.new_symbol().unwrap();
         }
 
-        g.new_rule(0.into(), &[1, 2]).unwrap();
-        g.new_rule(1.into(), &[3, 4]).unwrap();
-        g.new_rule(2.into(), &[]).unwrap();
+        g.new_rule(0, &[1, 2]).unwrap();
+        g.new_rule(1, &[3, 4]).unwrap();
+        g.new_rule(2, &[]).unwrap();
 
         let ids: Vec<i32> = vec![0, 1, 2];
 
-        g.set_start_symbol(0.into()).unwrap();
+        g.set_start_symbol(0).unwrap();
 
         g.precompute().unwrap();
 
@@ -533,14 +557,11 @@ mod tests {
     fn set_terminal() {
         let mut g = Grammar::new().unwrap();
         let s = g.new_symbol().unwrap();
-        assert!(g.symbol_is_terminal(s).unwrap() == false);
+        assert!(!g.symbol_is_terminal(s).unwrap());
         g.symbol_set_terminal(s, true).unwrap();
-        assert!(g.symbol_is_terminal(s).unwrap() == true);
+        assert!(g.symbol_is_terminal(s).unwrap());
         let term = g.symbol_set_terminal(s, false);
-        match term {
-            Ok(_) => assert!(false),
-            _ => {}
-        }
+        assert!(term.is_err(), "expected terminal-status-locked error after flipping a locked terminal");
     }
 
     #[test]
@@ -561,12 +582,6 @@ mod tests {
         g.new_rule(start, &[]).unwrap();
         g.precompute().unwrap();
         assert!(g.symbol_is_nulling(start).unwrap());
-        assert!(g.events().unwrap().collect::<Vec<Event>>().len() == 0);
-    }
-}
-
-impl From<Config> for Result<Grammar> {
-    fn from(other: Config) -> Self {
-        Grammar::with_config(other)
+        assert!(g.events().unwrap().collect::<Vec<Event>>().is_empty());
     }
 }

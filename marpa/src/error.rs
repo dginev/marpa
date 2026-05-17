@@ -6,10 +6,8 @@ impl Error {
     pub fn get_code(&self) -> u32 {
         self.0
     }
-}
 
-impl ::std::error::Error for Error {
-    fn description(&self) -> &str {
+    fn message(&self) -> &str {
         match self.0 as usize {
             i if i < MARPA_ERROR_DESCRIPTION.len() => MARPA_ERROR_DESCRIPTION[i].2,
             _ => match self.1 {
@@ -20,16 +18,17 @@ impl ::std::error::Error for Error {
     }
 }
 
+impl ::std::error::Error for Error {}
+
 impl ::std::fmt::Display for Error {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        use std::error::Error;
-        write!(f, "{}", self.description())
+        write!(f, "{}", self.message())
     }
 }
 
 impl ::std::fmt::Debug for Error {
     fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        write!(f, "{}", self)
+        write!(f, "{self}")
     }
 }
 
@@ -37,20 +36,20 @@ impl From<u32> for Error {
     fn from(other: u32) -> Error {
         match other {
             i if (i as usize) < MARPA_ERROR_DESCRIPTION.len() => Error(i, None),
-            i => Error(i, Some(format!("undefined error: {}", i))),
+            i => Error(i, Some(format!("undefined error: {i}"))),
         }
     }
 }
 
-impl<'a> From<&'a str> for Error {
+impl From<&str> for Error {
     fn from(other: &str) -> Error {
-        other.into()
+        Error::from(other.to_string())
     }
 }
 
 impl From<String> for Error {
     fn from(other: String) -> Error {
-        Error(std::u32::MAX, Some(other))
+        Error(u32::MAX, Some(other))
     }
 }
 
@@ -58,8 +57,7 @@ impl ::std::ops::Deref for Error {
     type Target = str;
 
     fn deref(&self) -> &str {
-        use std::error::Error;
-        self.description()
+        self.message()
     }
 }
 

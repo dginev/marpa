@@ -28,32 +28,32 @@ where
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Node::Tree(ref rule, ref children) => {
-                write!(f, "Tree({},", rule)?;
+                write!(f, "Tree({rule},")?;
                 for child in children {
-                    write!(f, " {}", child)?;
+                    write!(f, " {child}")?;
                 }
                 write!(f, ")")?;
             }
             Node::Rule(ref rule, ref children) => {
-                write!(f, "Rule({},", rule)?;
+                write!(f, "Rule({rule},")?;
                 for child in children {
-                    write!(f, " {}", child)?;
+                    write!(f, " {child}")?;
                 }
                 write!(f, ")")?;
             }
             Node::Token(ty, ref val) => {
-                write!(f, "Token({}, ", ty)?;
-                match ::std::str::from_utf8(&val) {
-                    Ok(s) => write!(f, "\"{}\"", s)?,
-                    Err(_) => write!(f, "{:?}", val)?,
+                write!(f, "Token({ty}, ")?;
+                match ::std::str::from_utf8(val) {
+                    Ok(s) => write!(f, "\"{s}\"")?,
+                    Err(_) => write!(f, "{val:?}")?,
                 }
                 write!(f, ")")?;
             }
             Node::Leaf(ref tok) => {
-                write!(f, "Leaf({})", tok)?;
+                write!(f, "Leaf({tok})")?;
             }
             Node::Null(sym) => {
-                write!(f, "Null({})", sym)?;
+                write!(f, "Null({sym})")?;
             }
         }
         Ok(())

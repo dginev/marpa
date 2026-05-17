@@ -1,4 +1,3 @@
-use crate::thin::bocage as b;
 use crate::thin::bocage::Bocage;
 use crate::thin::grammar::Grammar;
 use libmarpa_sys::*;
@@ -12,7 +11,11 @@ pub struct Order {
     grammar: Grammar,
 }
 
-result_from!(Order, Bocage);
+impl From<&Bocage> for Result<Order> {
+    fn from(other: &Bocage) -> Self {
+        Order::new(other)
+    }
+}
 
 pub fn internal(order: &Order) -> Marpa_Order {
     order.internal
@@ -41,10 +44,9 @@ impl Drop for Order {
 }
 
 impl Order {
-    pub fn new(b: Bocage) -> Result<Order> {
-        let b_internal = b::internal(&b);
-        let grammar = b::grammar(&b);
-        match unsafe { marpa_o_new(b_internal) } {
+    pub fn new(b: &Bocage) -> Result<Order> {
+        let grammar = b.grammar();
+        match unsafe { marpa_o_new(b.internal()) } {
             n if n.is_null() => grammar.error_or("error creating order"),
             o => Ok(Order { internal: o, grammar }),
         }
@@ -54,7 +56,7 @@ impl Order {
         match unsafe { marpa_o_ambiguity_metric(self.internal) } {
             -2 => self.grammar.error_or("error getting order ambiguity metric"),
             m if m >= 1 => Ok(m),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -63,7 +65,7 @@ impl Order {
             -2 => self.grammar.error_or("error getting order is_null"),
             0 => Ok(false),
             1 => Ok(true),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -71,7 +73,7 @@ impl Order {
         match unsafe { marpa_o_high_rank_only_set(self.internal, high_only as i32) } {
             -2 => self.grammar.error_or("error setting high rank only"),
             0 | 1 => Ok(()),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -80,7 +82,7 @@ impl Order {
             -2 => self.grammar.error_or("error getting high rank only"),
             0 => Ok(false),
             1 => Ok(true),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -88,7 +90,29 @@ impl Order {
         match unsafe { marpa_o_rank(self.internal) } {
             -2 => self.grammar.error_or("error ranking order"),
             i if i >= 0 => Ok(()),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
+    }
+
+    pub fn or_node_and_node_count(&mut self, or_node_id: usize) -> Result<i32> {
+        match unsafe { _marpa_o_or_node_and_node_count(self.internal, or_node_id as i32) } {
+            m if m >= 0 => Ok(m),
+            e => panic!("unexpected error code: {e}"),
+        }
+    }
+
+    pub fn or_node_and_node_ids(&mut self, or_node_id: usize) -> Vec<i32> {
+        let mut ids = Vec::new();
+        match unsafe { _marpa_o_or_node_and_node_count(self.internal, or_node_id as i32) } {
+            -1 => {}
+            c if c < -1 => panic!("Invalid or node ID {or_node_id}"),
+            count => {
+                for ix in 0..count {
+                    let and_node_id = unsafe { _marpa_o_or_node_and_node_id_by_ix(self.internal, or_node_id as i32, ix) };
+                    ids.push(and_node_id);
+                }
+            }
+        }
+        ids
     }
 }

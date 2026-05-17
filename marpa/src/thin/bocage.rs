@@ -1,25 +1,17 @@
 use libmarpa_sys::*;
 
+use crate::result::*;
 use crate::thin::earley::*;
 use crate::thin::grammar::Grammar;
+use crate::thin::order::Order;
 use crate::thin::recognizer as r;
 use crate::thin::recognizer::Recognizer;
-
-use crate::result::*;
 
 pub struct Bocage {
     internal: Marpa_Bocage,
     // we need to keep a reference to this accessible
     // in order to read error codes.
     grammar: Grammar,
-}
-
-pub fn internal(bocage: &Bocage) -> Marpa_Bocage {
-    bocage.internal
-}
-
-pub fn grammar(bocage: &Bocage) -> Grammar {
-    bocage.grammar.clone()
 }
 
 impl Clone for Bocage {
@@ -41,16 +33,24 @@ impl Drop for Bocage {
 }
 
 impl Bocage {
-    pub fn new_at_set(r: Recognizer, set: EarleySet) -> Result<Bocage> {
-        let r_internal = r::internal(&r);
-        let grammar = r::grammar(&r);
+    pub fn internal(&self) -> Marpa_Bocage {
+        self.internal
+    }
+
+    pub fn grammar(&self) -> Grammar {
+        self.grammar.clone()
+    }
+
+    pub fn new_at_set(r: &Recognizer, set: EarleySet) -> Result<Bocage> {
+        let r_internal = r::internal(r);
+        let grammar = r::grammar(r);
         match unsafe { marpa_b_new(r_internal, set) } {
             n if n.is_null() => grammar.error_or("error creating bocage"),
             b => Ok(Bocage { internal: b, grammar }),
         }
     }
 
-    pub fn new(r: Recognizer) -> Result<Bocage> {
+    pub fn new(r: &Recognizer) -> Result<Bocage> {
         Bocage::new_at_set(r, -1)
     }
 
@@ -58,7 +58,7 @@ impl Bocage {
         match unsafe { marpa_b_ambiguity_metric(self.internal) } {
             i if i > 0 => Ok(i),
             -2 => self.grammar.error_or("error getting ambiguity"),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -67,8 +67,61 @@ impl Bocage {
             i if i >= 1 => Ok(true),
             0 => Ok(false),
             -2 => self.grammar.error_or("error getting bocage is_null"),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
+    }
+
+    pub fn top_or_node(&self) -> Result<i32> {
+        match unsafe { _marpa_b_top_or_node(self.internal) } {
+            i if i > 0 => Ok(i),
+            code => Err(format!("failed to get top node in Bocage: {code}").into()),
+        }
+    }
+
+    pub fn or_node_irl(&self, node_id: i32) -> Result<i32> {
+        match unsafe { _marpa_b_or_node_irl(self.internal, node_id) } {
+            i if i > 0 => Ok(i),
+            code => Err(format!("failed to get or node irl in Bocage: {code}").into()),
+        }
+    }
+
+    pub fn and_node_cause(&self, node_id: i32) -> Result<i32> {
+        // The whole ID of NID is the external rule id of an or-node, or -1
+        // if the NID is for a token and-node.
+        match unsafe { _marpa_b_and_node_cause(self.internal, node_id) } {
+            i if i > -2 => Ok(i),
+            code => Err(format!("failed to get and_node (id {node_id}) cause in Bocage: {code}").into()),
+        }
+    }
+
+    pub fn and_node_symbol(&self, node_id: i32) -> Result<i32> {
+        match unsafe { _marpa_b_and_node_symbol(self.internal, node_id) } {
+            i if i > -2 => Ok(i),
+            code => Err(format!("failed to get and_node symbol in Bocage: {code}").into()),
+        }
+    }
+    pub fn and_node_predecessor(&self, node_id: i32) -> Option<i32> {
+        match unsafe { _marpa_b_and_node_predecessor(self.internal, node_id) } {
+            i if i > -2 => Some(i),
+            _ => None,
+        }
+    }
+
+    pub fn get_ordering(&self) -> Option<Order> {
+        Order::new(self).ok()
+        // TODO?
+        // GIVEN_RANKING_METHOD: {
+        //     my $ranking_method =
+        //         $recce->[Marpa::R2::Internal::Recognizer::RANKING_METHOD];
+        //     if ( $ranking_method eq 'high_rule_only' ) {
+        //         do_high_rule_only($recce);
+        //         last GIVEN_RANKING_METHOD;
+        //     }
+        //     if ( $ranking_method eq 'rule' ) {
+        //         do_rank_by_rule($recce);
+        //         last GIVEN_RANKING_METHOD;
+        //     }
+        // } ## end GIVEN_RANKING_METHOD:
     }
 }
 
@@ -85,7 +138,7 @@ mod tests {
         g.new_rule(start, &[]).unwrap();
         g.precompute().unwrap();
         assert!(g.symbol_is_nulling(start).unwrap());
-        assert!(g.events().unwrap().collect::<Vec<Event>>().len() == 0);
+        assert!(g.events().unwrap().collect::<Vec<Event>>().is_empty());
 
         let mut r: Recognizer = Recognizer::new(g).unwrap();
 
@@ -95,10 +148,10 @@ mod tests {
         for e in evs.iter() {
             println!("Event: {:?}", e);
         }
-        assert!(evs.len() != 0);
+        assert!(!evs.is_empty());
 
-        let _ = Bocage::new(r).unwrap();
+        let _ = Bocage::new(&r).unwrap();
     }
 }
 
-result_from!(Bocage, Recognizer);
+result_from_borrowed!(Bocage, Recognizer);

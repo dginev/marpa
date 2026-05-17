@@ -11,7 +11,7 @@ impl fmt::Display for ByteToken {
         let a: [u8; 1] = [self.0];
         match str::from_utf8(&a) {
             Err(_) => write!(f, "{:x}", self.0),
-            Ok(s) => write!(f, "'{}'", s),
+            Ok(s) => write!(f, "'{s}'"),
         }
     }
 }
@@ -89,10 +89,7 @@ impl<R: ::std::io::Read> Iterator for ByteScanner<R> {
     type Item = ByteToken;
 
     fn next(&mut self) -> Option<ByteToken> {
-        match self.read_byte() {
-            Some(byte) => Some(ByteToken(byte)),
-            None => None,
-        }
+        self.read_byte().map(ByteToken)
     }
 }
 

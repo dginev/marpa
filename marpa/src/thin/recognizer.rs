@@ -15,7 +15,7 @@ pub struct Recognizer {
     internal: Marpa_Recognizer,
     // we need to keep a reference to this accessible
     // in order to read error codes.
-    grammar: Grammar,
+    pub(crate) grammar: Grammar,
 }
 
 result_from!(Recognizer, Grammar);
@@ -59,7 +59,7 @@ impl Recognizer {
         match unsafe { marpa_r_start_input(self.internal) } {
             -2 => self.grammar.error_or("error starting input"),
             i if i >= 0 => Ok(()),
-            i => panic!("unexpected error code: {}", i),
+            i => panic!("unexpected error code: {i}"),
         }
     }
 
@@ -74,7 +74,7 @@ impl Recognizer {
         match unsafe { marpa_r_earleme_complete(self.internal) } {
             -2 => self.grammar.error_or("error completing earleme"),
             evs if evs >= 0 => Ok(evs),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -82,7 +82,7 @@ impl Recognizer {
         match unsafe { marpa_r_current_earleme(self.internal) } {
             -1 => err_rnotstarted(),
             e if e >= 0 => Ok(e),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -94,7 +94,7 @@ impl Recognizer {
         match unsafe { marpa_r_earleme(self.internal, set) } {
             -2 => self.grammar.error_or("error getting earleme"),
             e if e >= 0 => Ok(e),
-            err => panic!("unexpected error code: {}", err),
+            err => panic!("unexpected error code: {err}"),
         }
     }
 
@@ -142,7 +142,7 @@ impl Recognizer {
         match unsafe { marpa_r_is_exhausted(self.internal) } {
             1 => true,
             0 => false,
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -163,7 +163,7 @@ impl Recognizer {
                 mem::forget(tmp);
                 unsafe { Ok(Vec::from_raw_parts(data_ptr, i as usize, syms)) }
             }
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -172,7 +172,7 @@ impl Recognizer {
             -2 => self.grammar.error_or("error getting terminal is_expected"),
             0 => Ok(false),
             i if i > 0 => Ok(true),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -181,7 +181,7 @@ impl Recognizer {
         match unsafe { marpa_r_progress_report_reset(self.internal) } {
             -2 => self.grammar.error_or("error resetting progress report"),
             i if i >= 0 => Ok(()),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -189,7 +189,7 @@ impl Recognizer {
         match unsafe { marpa_r_progress_report_start(self.internal, set) } {
             -2 => self.grammar.error_or("error starting progress report"),
             n if n >= 0 => Ok(n),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -197,7 +197,7 @@ impl Recognizer {
         match unsafe { marpa_r_progress_report_finish(self.internal) } {
             -2 => self.grammar.error_or("error finishing progress report"),
             n if n >= 0 => Ok(()),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -208,7 +208,7 @@ impl Recognizer {
             -2 => self.grammar.error_or("error getting next progress report item"),
             -1 => err_code(MARPA_ERR_PROGRESS_REPORT_EXHAUSTED),
             ruleid if ruleid >= 0 => Ok(ProgressItem { rule: ruleid, pos, origin }),
-            e => panic!("unexpected error code: {}", e),
+            e => panic!("unexpected error code: {e}"),
         }
     }
 
@@ -238,6 +238,10 @@ impl Recognizer {
     pub fn events(&self) -> Result<EventIter> {
         self.grammar.events()
     }
+
+    pub fn grammar(&self) -> &Grammar {
+        &self.grammar
+    }
 }
 
 #[cfg(test)]
@@ -254,7 +258,7 @@ mod tests {
         g.new_rule(start, &[]).unwrap();
         g.precompute().unwrap();
         assert!(g.symbol_is_nulling(start).unwrap());
-        assert!(g.events().unwrap().collect::<Vec<Event>>().len() == 0);
+        assert!(g.events().unwrap().collect::<Vec<Event>>().is_empty());
 
         let mut r: Recognizer = Recognizer::new(g).unwrap();
 
@@ -264,6 +268,6 @@ mod tests {
         for e in evs.iter() {
             println!("Event: {:?}", e);
         }
-        assert!(evs.len() != 0);
+        assert!(!evs.is_empty());
     }
 }

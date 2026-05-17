@@ -1,5 +1,3 @@
 [workspace]
-members = [
-	"marpa",
-	"libmarpa-sys",
-]
+members = ["marpa", "libmarpa-sys"]
+resolver = "3"

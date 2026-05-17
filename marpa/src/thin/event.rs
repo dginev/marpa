@@ -48,7 +48,7 @@ impl Iterator for EventIter {
                     MARPA_EVENT_SYMBOL_EXPECTED => Some(Event::SymbolExpected(event.t_value)),
                     MARPA_EVENT_SYMBOL_NULLED => Some(Event::SymbolNulled(event.t_value)),
                     MARPA_EVENT_SYMBOL_PREDICTED => Some(Event::SymbolPredicted(event.t_value)),
-                    ev => panic!("unknown event type: {}", ev),
+                    ev => panic!("unknown event type: {ev}"),
                 }
             },
         }
