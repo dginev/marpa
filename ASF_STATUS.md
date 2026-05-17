@@ -108,7 +108,68 @@ Once Steps 2-6 land, the latexml-oxide math parser can use `parse_and_traverse_f
 
 ## Effort estimate
 
-- Step 1 — 30 min (this PR adds the test).
+- Step 1 — 30 min (committed; pin-down test + Glade API cleanup +
+  `Parser::ambiguity_metric` pre-flight oracle).
 - Steps 2-5 — 1-2 weeks of focused porting + testing. The Perl source is ~500 lines in `ASF.pm` plus `~Choicepoint.pm`; needs Rust ownership/borrowing rewrite (factoring stack with shared glade references is the tricky bit).
 - Step 6 — 1 day, gated on Steps 2-5.
 - Step 7 — separate effort in the latexml-oxide repo.
+
+## Target Rust API (sketch, derived from Marpa::R2::ASF docs)
+
+The Perl interface ([metacpan ASF.pod](https://metacpan.org/dist/Marpa-R2/view/pod/ASF.pod)) is a mutable-iterator design — `glade.next()` advances the glade pointer through alternatives in-place, the user calls `rh_value(i)` to recursively pull child values, and a single mutable scratchpad threads state.
+
+For Rust, the same capability is more idiomatically expressed as:
+
+```rust
+/// Result of walking one glade. Token glades have no rule_id and no
+/// RHS; rule glades have both.
+pub enum GladeKind {
+    Token { symbol_id: i32, literal: Vec<u8>, span: Range<usize> },
+    Rule  { rule_id: i32, symbol_id: i32, span: Range<usize>, rh: Vec<usize> /* child glade ids */ },
+}
+
+pub trait Traverser {
+    type Output;
+
+    /// Called at most once per glade (results are memoized by the ASF).
+    /// `alternatives` enumerates all symch + factoring combinations at
+    /// this glade; the user picks zero, one, or all to compute Output
+    /// from. `children` provides already-computed Output values for
+    /// each child glade referenced in `alternatives`.
+    fn traverse_glade(
+        &mut self,
+        glade_id: usize,
+        alternatives: &[GladeKind],
+        children: &HashMap<usize, Self::Output>,
+    ) -> Result<Self::Output>;
+}
+
+impl<R: Recognizer> ASF<R> {
+    pub fn new(recce: R) -> Result<Self>;
+    pub fn traverse<T: Traverser>(&mut self, traverser: &mut T) -> Result<T::Output>;
+    pub fn ambiguity_metric(&self) -> i32;  // 1 or 2, mirrors Bocage
+}
+```
+
+Differences from the Perl design and why:
+
+| Perl behavior | Rust shape | Why |
+|---|---|---|
+| `glade.next()` mutates the glade in place | `alternatives: &[GladeKind]` is the full list | Avoids interior mutability + lifetime headaches. The memory cost is bounded by `Glade::symch_count * factor_count`, which is small for non-pathological grammars. |
+| `glade.rh_value(i)` does on-demand recursion into child glades | `children: &HashMap<usize, Output>` is pre-populated | The ASF driver decides traversal order (post-order: children first, then parent) and memoizes results. Users don't trigger recursion; they consume already-computed values. |
+| `$scratch_ref` mutable scratch | `&mut self` on the Traverser | Same effect, but typed and scoped to the traverser instance. |
+| Token alternatives signalled by `rule_id == undef` | `GladeKind::Token { … }` vs `GladeKind::Rule { … }` | Sum-type makes the discriminant impossible to forget at the call site. |
+| `glade.symbol_id()` returns the LHS or token symbol | Both variants of `GladeKind` carry `symbol_id` | Same information, exposed uniformly. |
+| `traverse` callback may return any defined value (undef = fatal) | `traverse_glade -> Result<Output>` | `Result` is Rust's idiomatic way to signal "definedness"; the caller can fail the entire traversal by returning `Err`. |
+
+**What's NOT carried over from Perl:**
+- The `[:start]` symbol name convention. In our world, the peak glade is just the result `traverse(...)` returns. No magic string.
+- The "alternatives within a symch are visited as a group" guarantee. In Rust, `alternatives: &[GladeKind]` is grouped naturally (sort by `rule_id` if the user cares); we don't need to encode that as a traversal-order invariant.
+- The pruning style (returning early from `next()` loop). In Rust, the user just doesn't include certain alternatives in their `Output` — semantically equivalent, structurally cleaner.
+
+## Background reading
+
+See [`background/`](background/) for the Kegler 2023 papers (the
+recognizer and the nullable-symbols rewrite) and the index pointing
+at the Marpa::R2::ASF Perl docs. These are the load-bearing
+references for the Step-2 port.
