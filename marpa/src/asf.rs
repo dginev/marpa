@@ -63,13 +63,37 @@ pub trait Traverser {
 pub struct ASF {
   next_inset_id: usize,
   factoring_max: usize,
-  nidset_by_id: HashMap<usize, Nidset>,
-  glades: HashMap<usize, Glade>,
+  /// Indexed by glade id (sequential, dense). `None` slots are
+  /// holes — register_glade/get widen the Vec as needed.
+  nidset_by_id: Vec<Option<Nidset>>,
+  /// Same indexing convention as `nidset_by_id`.
+  glades: Vec<Option<Glade>>,
   intset_by_key: HashMap<Vec<i32>, usize>,
   or_nodes: Vec<Nidset>,
   recce: Recognizer,
   bocage: Bocage,
   ordering: Order,
+}
+
+/// Resize `slot.len()` up to `idx + 1` with `None` and set the slot.
+fn vec_slot_set<T>(slot: &mut Vec<Option<T>>, idx: usize, val: T) {
+  if slot.len() <= idx {
+    slot.resize_with(idx + 1, || None);
+  }
+  slot[idx] = Some(val);
+}
+
+/// Get a mutable ref to the slot at `idx`, growing as needed and
+/// initializing with `Default::default()`. Mirrors the prior
+/// `HashMap::entry(idx).or_default()` pattern.
+fn vec_slot_or_default<T: Default>(slot: &mut Vec<Option<T>>, idx: usize) -> &mut T {
+  if slot.len() <= idx {
+    slot.resize_with(idx + 1, || None);
+  }
+  if slot[idx].is_none() {
+    slot[idx] = Some(T::default());
+  }
+  slot[idx].as_mut().unwrap()
 }
 
 impl ASF {
@@ -84,7 +108,12 @@ impl ASF {
 
   fn obtain_nidset_id(&mut self, nids: Vec<i32>) -> usize {
     let (id, nids) = self.intset_id(nids);
-    self.nidset_by_id.entry(id).or_insert_with(|| Nidset { id, nids });
+    if self.nidset_by_id.len() <= id {
+      self.nidset_by_id.resize_with(id + 1, || None);
+    }
+    if self.nidset_by_id[id].is_none() {
+      self.nidset_by_id[id] = Some(Nidset { id, nids });
+    }
     id
   }
 
@@ -92,7 +121,7 @@ impl ASF {
   /// mark it registered. Computation of its symches is deferred until
   /// `obtain_glade(glade_id)` is called (lazy, matches Perl).
   fn register_glade(&mut self, glade_id: usize) {
-    let glade = self.glades.entry(glade_id).or_default();
+    let glade = vec_slot_or_default(&mut self.glades, glade_id);
     glade.registered = true;
   }
 
@@ -123,8 +152,8 @@ impl ASF {
 
     Ok(ASF {
       next_inset_id: 0,
-      nidset_by_id: HashMap::new(),
-      glades: HashMap::new(),
+      nidset_by_id: Vec::new(),
+      glades: Vec::new(),
       intset_by_key: HashMap::new(),
       factoring_max: 42,
       or_nodes,
@@ -183,7 +212,7 @@ impl ASF {
     // hold a borrow into `self.glades`.
     self.obtain_glade(glade_id)?;
     let child_ids: Vec<usize> = {
-      let glade = self.glades.get(&glade_id).unwrap();
+      let glade = self.glades.get(glade_id).and_then(|o| o.as_ref()).unwrap();
       let mut seen: Vec<usize> = Vec::new();
       for symch in &glade.symches {
         for factoring in &symch.factorings {
@@ -204,7 +233,7 @@ impl ASF {
     // Mark the parent visited up-front so a cycle (cousin pointing
     // back through us) doesn't recurse infinitely. Honest acyclic
     // bocages won't hit this, but defensive.
-    if let Some(g) = self.glades.get_mut(&glade_id) {
+    if let Some(Some(g)) = self.glades.get_mut(glade_id) {
       g.visited = true;
     }
 
@@ -222,7 +251,8 @@ impl ASF {
     // iterate (symch, factoring) from the start.
     let glade = self
       .glades
-      .get_mut(&glade_id)
+      .get_mut(glade_id)
+      .and_then(|o| o.as_mut())
       .expect("glade entry must exist after obtain_glade");
     glade.rewind();
     let output = traverser.traverse_glade(glade, cache.as_slice(), state)?;
@@ -267,13 +297,14 @@ impl ASF {
   }
 
   fn obtain_glade(&mut self, glade_id: usize) -> Result<&mut Glade> {
-    let glade = self.glades.get(&glade_id).expect("Attempt to use an invalid glade");
+    let glade = self.glades.get(glade_id).and_then(|o| o.as_ref())
+      .expect("Attempt to use an invalid glade");
     if !glade.registered {
       panic!("attempt to use an unregistered glade with ID: {glade_id}");
     }
     // Return the glade if it is already set up
     if !glade.symches.is_empty() {
-      Ok(self.glades.get_mut(&glade_id).unwrap())
+      Ok(self.glades.get_mut(glade_id).and_then(|o| o.as_mut()).unwrap())
     } else {
       self.compute_symches(glade_id)
     }
@@ -285,7 +316,8 @@ impl ASF {
     // scaffolding, but cleaned up.
     let source_nids: Vec<i32> = self
       .nidset_by_id
-      .get(&glade_id)
+      .get(glade_id)
+      .and_then(|o| o.as_ref())
       .unwrap_or_else(|| panic!("No nidset registered for glade ID {glade_id}"))
       .nids
       .clone();
@@ -381,7 +413,8 @@ impl ASF {
     // glade share the same LHS symbol (or the same token id).
     let symbol_id = self.nid_symbol_id(source_data[0].1)?;
 
-    let glade = self.glades.get_mut(&glade_id).expect("Attempt to use an invalid glade");
+    let glade = self.glades.get_mut(glade_id).and_then(|o| o.as_mut())
+      .expect("Attempt to use an invalid glade");
     glade.symches = symches;
     glade.id = glade_id;
     glade.symbol_id = symbol_id;
@@ -478,7 +511,7 @@ impl ASF {
 
   #[allow(dead_code)]
   fn glade_is_visited(&self, glade_id: usize) -> bool {
-    match self.glades.get(&glade_id) {
+    match self.glades.get(glade_id).and_then(|o| o.as_ref()) {
       None => false,
       Some(glade) => glade.visited,
     }
