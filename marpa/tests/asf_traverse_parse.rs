@@ -84,12 +84,9 @@ fn asf_peak_glade_scaffolding_pin_down() {
 
   let log: Rc<RefCell<Vec<GladeFrame>>> = Rc::new(RefCell::new(Vec::new()));
 
+  let mut traverser = PinDownTraverser { log: log.clone() };
   parser
-    .parse_and_traverse_forest(
-      ByteScanner::new(Cursor::new(PANDA_INPUT)),
-      (),
-      Box::new(PinDownTraverser { log: log.clone() }),
-    )
+    .parse_and_traverse_forest(ByteScanner::new(Cursor::new(PANDA_INPUT)), (), &mut traverser)
     .expect("traverse should succeed");
 
   let frames = log.borrow();
@@ -181,14 +178,11 @@ impl Traverser for PinDownTraverser {
 fn asf_three_parses_via_exhaustive_traverser() {
   let (mut parser, _b, rule_names) = build_grammar().expect("grammar build should succeed");
 
+  let mut traverser = ExhaustiveTraverser {
+    rule_names: rule_names.clone(),
+  };
   let (out, _state) = parser
-    .parse_and_traverse_forest(
-      ByteScanner::new(Cursor::new(PANDA_INPUT)),
-      (),
-      Box::new(ExhaustiveTraverser {
-        rule_names: rule_names.clone(),
-      }),
-    )
+    .parse_and_traverse_forest(ByteScanner::new(Cursor::new(PANDA_INPUT)), (), &mut traverser)
     .expect("traverse should succeed");
 
   // De-duplicate at the top to ignore order/repeats. The peak's
@@ -201,19 +195,13 @@ fn asf_three_parses_via_exhaustive_traverser() {
 
 fn runner_asf_traverse() -> Result<Vec<String>> {
   let (mut parser, _b, rule_names) = build_grammar().expect("grammar build should succeed, not core part of test");
-  let _ = parser.parse_and_traverse_forest(
-    ByteScanner::new(Cursor::new(PANDA_INPUT)),
-    (),
-    Box::new(ExhaustiveTraverser {
-      rule_names: rule_names.clone(),
-    }),
-  )?;
+  let mut exhaustive = ExhaustiveTraverser {
+    rule_names: rule_names.clone(),
+  };
+  let _ = parser.parse_and_traverse_forest(ByteScanner::new(Cursor::new(PANDA_INPUT)), (), &mut exhaustive)?;
 
-  let _ = parser.parse_and_traverse_forest(
-    ByteScanner::new(Cursor::new(PANDA_INPUT)),
-    (),
-    Box::new(PruningTraverser { rule_names }),
-  )?;
+  let mut pruning = PruningTraverser { rule_names };
+  let _ = parser.parse_and_traverse_forest(ByteScanner::new(Cursor::new(PANDA_INPUT)), (), &mut pruning)?;
 
   Ok(Vec::new())
 }

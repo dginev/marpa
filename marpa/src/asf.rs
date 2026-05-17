@@ -122,19 +122,21 @@ impl ASF {
   /// once per reachable glade; child outputs are already in
   /// `children` by the time the parent fires.
   ///
+  /// Generic over the concrete traverser type (no `Box<dyn>` so the
+  /// traverser may borrow externally — important for the latexml-
+  /// oxide math parser, whose traverser needs `&mut Document` and
+  /// `&Actions`).
+  ///
   /// Returns `(peak_output, final_state)` once the peak glade has
   /// been evaluated.
-  pub fn traverse<PT, PS>(
-    &mut self,
-    mut init_state: PS,
-    mut traverser: Box<dyn Traverser<ParseTree = PT, ParseState = PS>>,
-  ) -> Result<(PT, PS)>
+  pub fn traverse<TR>(&mut self, mut init_state: TR::ParseState, traverser: &mut TR) -> Result<(TR::ParseTree, TR::ParseState)>
   where
-    PT: Clone,
+    TR: Traverser,
+    TR::ParseTree: Clone,
   {
     let peak = self.peak()?;
-    let mut cache: HashMap<usize, PT> = HashMap::new();
-    let output = self.traverse_glade_recursive(peak, &mut cache, &mut *traverser, &mut init_state)?;
+    let mut cache: HashMap<usize, TR::ParseTree> = HashMap::new();
+    let output = self.traverse_glade_recursive(peak, &mut cache, traverser, &mut init_state)?;
     Ok((output, init_state))
   }
 

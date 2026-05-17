@@ -130,16 +130,27 @@ impl Parser {
     /// This is roughly equivalent to `$asf->traverse` in Marpa::R2,
     /// but the ASF details are hidden under the hood.
     ///
-    /// `PT: Clone` because the recursive driver memoizes each glade's
-    /// output and may hand the same value to multiple parents (shared
-    /// sub-glades in the DAG). Wrap expensive types in `Rc` / `Arc`
-    /// if cloning is costly.
-    pub fn parse_and_traverse_forest<T: TokenSource<U>, U: Token, PT: Clone, PS>(
+    /// Takes `&mut TR` rather than `Box<dyn Traverser>` so the
+    /// traverser can borrow external state (e.g. the math parser's
+    /// `&mut Document`, `&Actions`). The trait method is
+    /// monomorphized at the call site — no dyn-dispatch overhead.
+    ///
+    /// `TR::ParseTree: Clone` because the recursive driver memoizes
+    /// each glade's output and may hand the same value to multiple
+    /// parents (shared sub-glades in the DAG). Wrap expensive types
+    /// in `Rc` if cloning is costly.
+    pub fn parse_and_traverse_forest<T, U, TR>(
         &mut self,
         tokens: T,
-        init_state: PS,
-        traverser: Box<dyn Traverser<ParseTree = PT, ParseState = PS>>,
-    ) -> Result<(PT, PS)> {
+        init_state: TR::ParseState,
+        traverser: &mut TR,
+    ) -> Result<(TR::ParseTree, TR::ParseState)>
+    where
+        T: TokenSource<U>,
+        U: Token,
+        TR: Traverser,
+        TR::ParseTree: Clone,
+    {
         // we need to read the tokens before starting the ASF step
         self.read(tokens)?;
         if let R(recce) = mem::replace(&mut self.state, GReady) {
