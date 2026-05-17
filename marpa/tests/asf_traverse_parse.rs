@@ -69,22 +69,24 @@ fn asf_traverse_parse() {
     assert!(runner_result.is_ok(), "failed to run asf traversal: {:?}", runner_result.err());
 }
 
-/// Pin-down test for the ASF traversal scaffolding state (2026-05-17).
+/// Pin-down test for the ASF peak glade after Step 2 landed.
 ///
-/// Today the panda grammar admits 3 parses (validated by
-/// `recce_parse_sanity`), and `ASF::traverse` invokes the supplied
-/// `Traverser::traverse_glade` exactly once on the peak glade. The
-/// `Glade` exposed to the traverser:
+/// `Glade` exposed to the traverser at the peak now reports:
 ///
-/// * has a non-trivial `id()` (set by `ASF::peak` → `obtain_nidset`),
-/// * has a `symbol_id()` corresponding to the grammar's start symbol,
-/// * reports `symch_count() == 0` (the inner factoring loop is not yet
-///   ported from Perl — see `ASF_STATUS.md` Step 2),
-/// * reports `is_factored() == false` (same reason).
+/// * a non-trivial `id()` (set by `ASF::peak` → `obtain_nidset`),
+/// * a `symbol_id()` corresponding to the grammar's start symbol,
+/// * `symch_count() == 1` — the start rule has one user-visible
+///   external rule (S → NP ws VP .),
+/// * `is_factored() == false` — Perl-faithful glade unification:
+///   the 3 panda parses share the same S rule with the same NP, ws,
+///   VP, period RHS positions; the ambiguity lives **inside** the
+///   VP child glade as 3 source or-nodes unified into one multi-nid
+///   nidset.
+/// * `factor_count() == 1` — single factoring at S level,
+/// * `rh_length() == 4` — the 4 RHS positions of S.
 ///
-/// When Step 2 lands, the assertions about symch_count / is_factored
-/// will need to be revised — that's the point of pinning down the
-/// scaffolding state explicitly.
+/// Step 5 (recursive `ASF::traverse`) is not yet implemented, so
+/// `traverse_glade` is still invoked exactly once on the peak.
 #[test]
 fn asf_peak_glade_scaffolding_pin_down() {
     use std::cell::Cell;
@@ -97,6 +99,9 @@ fn asf_peak_glade_scaffolding_pin_down() {
     let observed_symch_count = Rc::new(Cell::new(usize::MAX));
     let observed_is_factored = Rc::new(Cell::new(true));
     let observed_id_nonzero = Rc::new(Cell::new(false));
+    let observed_rh_length = Rc::new(Cell::new(usize::MAX));
+    let observed_rule_id_nonneg = Rc::new(Cell::new(false));
+    let observed_factor_count = Rc::new(Cell::new(usize::MAX));
 
     parser
         .parse_and_traverse_forest(
@@ -108,6 +113,9 @@ fn asf_peak_glade_scaffolding_pin_down() {
                 observed_symch_count: observed_symch_count.clone(),
                 observed_is_factored: observed_is_factored.clone(),
                 observed_id_nonzero: observed_id_nonzero.clone(),
+                observed_rh_length: observed_rh_length.clone(),
+                observed_rule_id_nonneg: observed_rule_id_nonneg.clone(),
+                observed_factor_count: observed_factor_count.clone(),
             }),
         )
         .expect("traverse should succeed");
@@ -119,8 +127,14 @@ fn asf_peak_glade_scaffolding_pin_down() {
     );
     assert!(observed_symbol_id.get() >= 0, "peak glade should have a valid (>= 0) symbol_id");
     assert!(observed_id_nonzero.get(), "peak glade id should be non-zero (a valid nidset_id)");
-    assert_eq!(observed_symch_count.get(), 0, "symches are unpopulated until ASF_STATUS Step 2 lands");
-    assert!(!observed_is_factored.get(), "is_factored is always false until Step 2 lands");
+    assert_eq!(observed_symch_count.get(), 1, "S rule has exactly one symch (one external rule)");
+    assert!(
+        !observed_is_factored.get(),
+        "S rule has a single factoring; ambiguity lives in the unified VP child glade"
+    );
+    assert_eq!(observed_factor_count.get(), 1, "single factoring at S level (Perl-faithful unification)");
+    assert_eq!(observed_rh_length.get(), 4, "S → NP ws VP . has 4 RHS positions");
+    assert!(observed_rule_id_nonneg.get(), "peak glade's current rule_id is a valid (>= 0) XRL");
 }
 
 struct PinDownTraverser {
@@ -129,6 +143,9 @@ struct PinDownTraverser {
     observed_symch_count: std::rc::Rc<std::cell::Cell<usize>>,
     observed_is_factored: std::rc::Rc<std::cell::Cell<bool>>,
     observed_id_nonzero: std::rc::Rc<std::cell::Cell<bool>>,
+    observed_rh_length: std::rc::Rc<std::cell::Cell<usize>>,
+    observed_rule_id_nonneg: std::rc::Rc<std::cell::Cell<bool>>,
+    observed_factor_count: std::rc::Rc<std::cell::Cell<usize>>,
 }
 
 impl Traverser for PinDownTraverser {
@@ -140,6 +157,9 @@ impl Traverser for PinDownTraverser {
         self.observed_symch_count.set(glade.symch_count());
         self.observed_is_factored.set(glade.is_factored());
         self.observed_id_nonzero.set(glade.id() != 0);
+        self.observed_rh_length.set(glade.rh_length());
+        self.observed_rule_id_nonneg.set(glade.rule_id() >= 0);
+        self.observed_factor_count.set(glade.factor_count());
         Ok(((), ()))
     }
 }
