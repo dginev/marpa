@@ -1,31 +1,34 @@
-# Rust Marpa Crate
+# Rust Marpa Crate (dginev fork)
 
-[![Travis Build Status](https://travis-ci.org/jrobsonchase/marpa.svg?branch=master)](https://travis-ci.org/jrobsonchase/marpa)
+This is a long-term-maintained fork of [jrobsonchase/marpa](https://github.com/jrobsonchase/marpa),
+with the abstract syntax forest (ASF) traversal work continued on the
+`abstract_syntax_forests` branch. Used downstream by
+[latexml-oxide](https://github.com/dginev/latexml-oxide) as its math
+grammar engine.
 
-## Marpa
+## Crates
 
-[![version](https://img.shields.io/crates/v/marpa.svg)](https://crates.io/crates/marpa/)
-[![documentation](https://docs.rs/marpa/badge.svg)](https://docs.rs/marpa/)
-[![license](https://img.shields.io/crates/l/marpa.svg)](https://crates.io/crates/marpa/)
+| Crate | Path | Role |
+|---|---|---|
+| `marpa` | [`marpa/`](marpa/) | Safe Rust bindings + grammar/recognizer/ASF API |
+| `libmarpa-sys` | [`libmarpa-sys/`](libmarpa-sys/) | Low-level `bindgen`-generated FFI to the bundled libmarpa C source (8.6.2 tarball, statically linked) |
 
-Marpa crate [README](marpa/README.md)
+## Building
 
-## libmarpa-sys
+```sh
+cargo build --workspace
+cargo test --workspace
+```
 
-[![version](https://img.shields.io/crates/v/libmarpa-sys.svg)](https://crates.io/crates/libmarpa-sys/)
-[![documentation](https://docs.rs/libmarpa-sys/badge.svg)](https://docs.rs/libmarpa-sys/)
-[![license](https://img.shields.io/crates/l/libmarpa-sys.svg)](https://crates.io/crates/libmarpa-sys/)
-
-libmarpa-sys crate [README](libmarpa-sys/README.md)
+Requires a working C toolchain (`cc`, `make`, `configure`) to build
+libmarpa from the bundled tarball, and Rust 1.85+ for edition 2024.
 
 ## License
 
-Licensed under either of
+Dual-licensed under Apache-2.0 OR MIT:
 
-* Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or <http://www.apache.org/licenses/LICENSE-2.0>)
-* MIT license ([LICENSE-MIT](LICENSE-MIT) or <http://opensource.org/licenses/MIT>)
-
-at your option.
+* [LICENSE-APACHE](LICENSE-APACHE)
+* [LICENSE-MIT](LICENSE-MIT)
 
 ### Contribution
 

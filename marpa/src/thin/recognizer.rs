@@ -258,7 +258,7 @@ mod tests {
         g.new_rule(start, &[]).unwrap();
         g.precompute().unwrap();
         assert!(g.symbol_is_nulling(start).unwrap());
-        assert!(g.events().unwrap().collect::<Vec<Event>>().len() == 0);
+        assert!(g.events().unwrap().collect::<Vec<Event>>().is_empty());
 
         let mut r: Recognizer = Recognizer::new(g).unwrap();
 
@@ -268,6 +268,6 @@ mod tests {
         for e in evs.iter() {
             println!("Event: {:?}", e);
         }
-        assert!(evs.len() != 0);
+        assert!(!evs.is_empty());
     }
 }

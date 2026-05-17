@@ -52,13 +52,7 @@ impl Iterator for Tree {
     fn next(&mut self) -> Option<Self::Item> {
         match unsafe { marpa_t_next(self.internal) } {
             -1 => None,
-            i if i >= 0 => {
-                if let Ok(val) = Value::new(self) {
-                    Some(val)
-                } else {
-                    None
-                }
-            }
+            i if i >= 0 => Value::new(self).ok(),
             e => panic!("unexpected error code: {e}"),
         }
     }

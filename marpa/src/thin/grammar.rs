@@ -54,7 +54,6 @@ impl Grammar {
         }
     }
 
-
     pub fn internal(&self) -> Marpa_Grammar {
         self.internal
     }
@@ -393,14 +392,14 @@ impl Grammar {
 
     pub fn source_xrl(&self, irl_id: i32) -> Result<i32> {
         match unsafe { _marpa_g_source_xrl(self.internal, irl_id) } {
-            i if i<0 => self.error_or("error getting source xrl"),
+            i if i < 0 => self.error_or("error getting source xrl"),
             i => Ok(i),
         }
     }
 
     pub fn source_xsy(&self, id: i32) -> Result<i32> {
         match unsafe { _marpa_g_source_xsy(self.internal, id) } {
-            i if i<0 => self.error_or("error getting source xrl"),
+            i if i < 0 => self.error_or("error getting source xrl"),
             i => Ok(i),
         }
     }
@@ -501,6 +500,12 @@ impl Grammar {
     }
 }
 
+impl From<Config> for Result<Grammar> {
+    fn from(other: Config) -> Self {
+        Grammar::with_config(other)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::thin::event::Event;
@@ -534,13 +539,13 @@ mod tests {
             g.new_symbol().unwrap();
         }
 
-        g.new_rule(0.into(), &[1, 2]).unwrap();
-        g.new_rule(1.into(), &[3, 4]).unwrap();
-        g.new_rule(2.into(), &[]).unwrap();
+        g.new_rule(0, &[1, 2]).unwrap();
+        g.new_rule(1, &[3, 4]).unwrap();
+        g.new_rule(2, &[]).unwrap();
 
         let ids: Vec<i32> = vec![0, 1, 2];
 
-        g.set_start_symbol(0.into()).unwrap();
+        g.set_start_symbol(0).unwrap();
 
         g.precompute().unwrap();
 
@@ -552,14 +557,11 @@ mod tests {
     fn set_terminal() {
         let mut g = Grammar::new().unwrap();
         let s = g.new_symbol().unwrap();
-        assert!(g.symbol_is_terminal(s).unwrap() == false);
+        assert!(!g.symbol_is_terminal(s).unwrap());
         g.symbol_set_terminal(s, true).unwrap();
-        assert!(g.symbol_is_terminal(s).unwrap() == true);
+        assert!(g.symbol_is_terminal(s).unwrap());
         let term = g.symbol_set_terminal(s, false);
-        match term {
-            Ok(_) => assert!(false),
-            _ => {}
-        }
+        assert!(term.is_err(), "expected terminal-status-locked error after flipping a locked terminal");
     }
 
     #[test]
@@ -580,12 +582,6 @@ mod tests {
         g.new_rule(start, &[]).unwrap();
         g.precompute().unwrap();
         assert!(g.symbol_is_nulling(start).unwrap());
-        assert!(g.events().unwrap().collect::<Vec<Event>>().len() == 0);
-    }
-}
-
-impl From<Config> for Result<Grammar> {
-    fn from(other: Config) -> Self {
-        Grammar::with_config(other)
+        assert!(g.events().unwrap().collect::<Vec<Event>>().is_empty());
     }
 }

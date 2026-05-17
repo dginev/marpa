@@ -15,8 +15,8 @@ impl Value {
         let grammar = tree::grammar(t);
         let v = unsafe { marpa_v_new(t_internal) };
         if v.is_null() {
-            grammar.error_or("error creating value") }
-        else {
+            grammar.error_or("error creating value")
+        } else {
             Ok(Value { internal: v, grammar })
         }
     }

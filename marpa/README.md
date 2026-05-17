@@ -1,13 +1,14 @@
-# Rust Marpa Crate
+# Rust Marpa Crate (dginev fork)
 
-[![Travis Build Status](https://travis-ci.org/jrobsonchase/marpa.svg?branch=master)](https://travis-ci.org/jrobsonchase/marpa)
-[![version](https://img.shields.io/crates/v/marpa.svg)](https://crates.io/crates/marpa/)
-[![documentation](https://docs.rs/marpa/badge.svg)](https://docs.rs/marpa/)
-[![license](https://img.shields.io/crates/l/marpa.svg)](https://crates.io/crates/marpa/)
+Safe Rust bindings for the [libmarpa](https://jeffreykegler.github.io/Marpa-web-site/libmarpa.html)
+Earley parser, currently being extended with abstract-syntax-forest
+(ASF) traversal support on the `abstract_syntax_forests` branch.
 
-This crate contains safe bindings for the marpa parsing engine.
+This is a long-term-maintained fork of
+[jrobsonchase/marpa](https://github.com/jrobsonchase/marpa). Used by
+[latexml-oxide](https://github.com/dginev/latexml-oxide) as its math
+grammar engine.
 
-Currently, they're a very thin layer over the C library and are in need of a
-frontend to generate a parser from an grammar.
-
-The documentation can be found [here](https://docs.rs/marpa).
+The bindings are a thin layer over the C library (see the parent
+workspace for the FFI sys crate); a usable frontend that constructs
+grammars from a high-level description is one of the long-term goals.
