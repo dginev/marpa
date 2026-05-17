@@ -1,8 +1,8 @@
 use std::mem;
 
+use crate::asf::{ASF, Traverser};
 use crate::lexer::token::Token;
 use crate::lexer::token_source::TokenSource;
-use crate::asf::{ASF, Traverser};
 use crate::result::Result;
 use crate::thin::{
     Bocage,
@@ -23,7 +23,7 @@ enum MarpaState {
     T(Tree),
 }
 
-use self::MarpaState::{GReady, B, G, O, R, T};
+use self::MarpaState::{B, G, GReady, O, R, T};
 
 impl MarpaState {
     fn new() -> Self {
@@ -76,9 +76,7 @@ impl Parser {
             }
             GReady => Recognizer::new(self.grammar.clone()).map(R),
             R(ref r) => Bocage::new(r).map(B),
-            B(ref b) => {
-                Order::new(b).map(O)
-            },
+            B(ref b) => Order::new(b).map(O),
             O(ref o) => Tree::new(o.clone()).map(T),
             T(_) => Ok(GReady),
         };
@@ -131,7 +129,12 @@ impl Parser {
 
     /// This is roughly equivalent to `$asf->traverse` in Marpa::R2,
     /// but the ASF details are hidden under the hood.
-    pub fn parse_and_traverse_forest<T: TokenSource<U>, U: Token, PT, PS>(&mut self, tokens: T, init_state:PS, traverser: Box<dyn Traverser<ParseTree = PT, ParseState=PS>>) -> Result<(PT, PS)> {
+    pub fn parse_and_traverse_forest<T: TokenSource<U>, U: Token, PT, PS>(
+        &mut self,
+        tokens: T,
+        init_state: PS,
+        traverser: Box<dyn Traverser<ParseTree = PT, ParseState = PS>>,
+    ) -> Result<(PT, PS)> {
         // we need to read the tokens before starting the ASF step
         self.read(tokens)?;
         if let R(recce) = mem::replace(&mut self.state, GReady) {
@@ -141,5 +144,4 @@ impl Parser {
             panic!("Parser::read must always terminate in the R state!");
         }
     }
-
 }

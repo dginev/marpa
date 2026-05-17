@@ -1,3 +1,4 @@
+pub mod asf;
 pub mod error;
 pub mod grammar;
 pub mod lexer;
@@ -6,4 +7,3 @@ pub mod result;
 pub mod stack;
 pub mod thin;
 pub mod tree_builder;
-pub mod asf;

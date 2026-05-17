@@ -1,18 +1,20 @@
 [package]
 name = "libmarpa-sys"
 version = "0.2.0"
-authors = ["Josh Robson Chase <josh@robsonchase.com>"]
+authors = [
+  "Josh Robson Chase <josh@robsonchase.com>",
+  "Deyan Ginev <deyan.ginev@gmail.com>",
+]
 description = "Low-level bindings to the libmarpa parsing engine"
-license = "MIT/Apache-2.0"
-repository = "https://github.com/jrobsonchase/marpa"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dginev/marpa"
 documentation = "https://docs.rs/libmarpa-sys"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-libc = "0.2.47"
+libc = "0.2"
 
 [build-dependencies]
-flate2 = "1.0.6"
-tar = "0.4.20"
-bindgen = "0.63.0"
-lazy_static = "1.2.0"
+flate2 = "1"
+tar = "0.4"
+bindgen = "0.72"

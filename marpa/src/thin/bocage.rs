@@ -1,11 +1,11 @@
 use libmarpa_sys::*;
 
+use crate::result::*;
 use crate::thin::earley::*;
 use crate::thin::grammar::Grammar;
+use crate::thin::order::Order;
 use crate::thin::recognizer as r;
 use crate::thin::recognizer::Recognizer;
-use crate::thin::order::Order;
-use crate::result::*;
 
 pub struct Bocage {
     internal: Marpa_Bocage,
@@ -74,44 +74,41 @@ impl Bocage {
     pub fn top_or_node(&self) -> Result<i32> {
         match unsafe { _marpa_b_top_or_node(self.internal) } {
             i if i > 0 => Ok(i),
-            code => Err(format!("failed to get top node in Bocage: {code}").into())
+            code => Err(format!("failed to get top node in Bocage: {code}").into()),
         }
     }
 
     pub fn or_node_irl(&self, node_id: i32) -> Result<i32> {
         match unsafe { _marpa_b_or_node_irl(self.internal, node_id) } {
             i if i > 0 => Ok(i),
-            code => Err(format!("failed to get or node irl in Bocage: {code}").into())
+            code => Err(format!("failed to get or node irl in Bocage: {code}").into()),
         }
     }
 
-    pub fn and_node_cause(&self, node_id:i32) -> Result<i32> {
+    pub fn and_node_cause(&self, node_id: i32) -> Result<i32> {
         // The whole ID of NID is the external rule id of an or-node, or -1
         // if the NID is for a token and-node.
         match unsafe { _marpa_b_and_node_cause(self.internal, node_id) } {
             i if i > -2 => Ok(i),
-            code => Err(format!("failed to get and_node (id {node_id}) cause in Bocage: {code}").into())
+            code => Err(format!("failed to get and_node (id {node_id}) cause in Bocage: {code}").into()),
         }
     }
 
-    pub fn and_node_symbol(&self, node_id:i32) -> Result<i32> {
+    pub fn and_node_symbol(&self, node_id: i32) -> Result<i32> {
         match unsafe { _marpa_b_and_node_symbol(self.internal, node_id) } {
             i if i > -2 => Ok(i),
-            code => Err(format!("failed to get and_node symbol in Bocage: {code}").into())
+            code => Err(format!("failed to get and_node symbol in Bocage: {code}").into()),
         }
     }
-    pub fn and_node_predecessor(&self, node_id:i32) -> Option<i32> {
+    pub fn and_node_predecessor(&self, node_id: i32) -> Option<i32> {
         match unsafe { _marpa_b_and_node_predecessor(self.internal, node_id) } {
             i if i > -2 => Some(i),
-            _ => None
+            _ => None,
         }
     }
 
     pub fn get_ordering(&self) -> Option<Order> {
-        match Order::new(self) {
-            Ok(o) => Some(o),
-            _ => None
-        }
+        Order::new(self).ok()
         // TODO?
         // GIVEN_RANKING_METHOD: {
         //     my $ranking_method =
@@ -141,7 +138,7 @@ mod tests {
         g.new_rule(start, &[]).unwrap();
         g.precompute().unwrap();
         assert!(g.symbol_is_nulling(start).unwrap());
-        assert!(g.events().unwrap().collect::<Vec<Event>>().len() == 0);
+        assert!(g.events().unwrap().collect::<Vec<Event>>().is_empty());
 
         let mut r: Recognizer = Recognizer::new(g).unwrap();
 
@@ -151,7 +148,7 @@ mod tests {
         for e in evs.iter() {
             println!("Event: {:?}", e);
         }
-        assert!(evs.len() != 0);
+        assert!(!evs.is_empty());
 
         let _ = Bocage::new(&r).unwrap();
     }
