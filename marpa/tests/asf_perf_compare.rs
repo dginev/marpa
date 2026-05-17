@@ -51,7 +51,7 @@ struct CountTraverser;
 impl Traverser for CountTraverser {
   type ParseTree = usize;
   type ParseState = ();
-  fn traverse_glade(&mut self, glade: &mut Glade, children: &HashMap<usize, usize>, _state: &mut ()) -> Result<usize> {
+  fn traverse_glade(&mut self, glade: &mut Glade, children: &[Option<usize>], _state: &mut ()) -> Result<usize> {
     if glade.is_token() {
       return Ok(1);
     }
@@ -61,7 +61,8 @@ impl Traverser for CountTraverser {
       let mut combo: usize = 1;
       for ix in 0..rh_len {
         let child_id = glade.rh_glade_id(ix).expect("rh");
-        combo = combo.saturating_mul(*children.get(&child_id).unwrap_or(&1));
+        let n = children.get(child_id).and_then(|o| o.as_ref()).copied().unwrap_or(1);
+        combo = combo.saturating_mul(n);
       }
       total = total.saturating_add(combo);
       if glade.next().is_none() {

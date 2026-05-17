@@ -150,7 +150,7 @@ impl Traverser for PinDownTraverser {
   fn traverse_glade(
     &mut self,
     glade: &mut Glade,
-    _children: &HashMap<usize, Self::ParseTree>,
+    _children: &[Option<Self::ParseTree>],
     _state: &mut Self::ParseState,
   ) -> Result<Self::ParseTree> {
     self.log.borrow_mut().push(GladeFrame {
@@ -273,7 +273,7 @@ impl Traverser for ExhaustiveTraverser {
   fn traverse_glade(
     &mut self,
     glade: &mut Glade,
-    children: &HashMap<usize, Self::ParseTree>,
+    children: &[Option<Self::ParseTree>],
     _state: &mut Self::ParseState,
   ) -> Result<Self::ParseTree> {
     // Token glade: the rendering is a Penn-tag wrapping the symbol id.
@@ -294,7 +294,7 @@ impl Traverser for ExhaustiveTraverser {
       let mut accum: Vec<String> = vec![String::new()];
       for ix in 0..rh_len {
         let child_id = glade.rh_glade_id(ix).expect("RHS position has a child glade");
-        let child_alts = children.get(&child_id).expect("child precomputed in post-order");
+        let child_alts = children.get(child_id).and_then(|o| o.as_ref()).expect("child precomputed in post-order");
         let mut next_accum = Vec::with_capacity(accum.len() * child_alts.len());
         for prefix in &accum {
           for alt in child_alts {
@@ -337,7 +337,7 @@ impl Traverser for PruningTraverser {
   fn traverse_glade(
     &mut self,
     glade: &mut Glade,
-    children: &HashMap<usize, Self::ParseTree>,
+    children: &[Option<Self::ParseTree>],
     _state: &mut Self::ParseState,
   ) -> Result<Self::ParseTree> {
     if glade.is_token() {
@@ -349,7 +349,7 @@ impl Traverser for PruningTraverser {
     let mut accum = String::new();
     for ix in 0..rh_len {
       let child_id = glade.rh_glade_id(ix).expect("rh position has a child glade");
-      let child_alts = children.get(&child_id).expect("child precomputed");
+      let child_alts = children.get(child_id).and_then(|o| o.as_ref()).expect("child precomputed");
       let first = child_alts.first().cloned().unwrap_or_default();
       if accum.is_empty() {
         accum = first;

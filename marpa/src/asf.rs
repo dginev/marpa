@@ -9,6 +9,18 @@ use crate::thin::{Bocage, Order, Recognizer};
 pub use self::glade::*;
 pub use self::nidset::*;
 
+/// Write `val` into the sparse `cache` at `idx`, growing the Vec with
+/// `None` placeholders as needed. The cache is allocated once per
+/// `traverse(...)` call and is sparse-by-design: a glade id ≤ max
+/// visited so far that wasn't reached on this traversal branch stays
+/// `None`.
+fn cache_set<T>(cache: &mut Vec<Option<T>>, idx: usize, val: T) {
+  if cache.len() <= idx {
+    cache.resize_with(idx + 1, || None);
+  }
+  cache[idx] = Some(val);
+}
+
 /// User callback for ASF traversal.
 ///
 /// The driver walks the bocage in post-order: child glades are
@@ -31,10 +43,15 @@ pub trait Traverser {
   type ParseTree;
   type ParseState;
 
+  /// `children` is a sparse slice indexed by glade id; a `None`
+  /// entry means that glade hasn't been visited on this branch of
+  /// the traversal (cycle-cousin scenarios). For a well-formed
+  /// acyclic bocage, every `glade.rh_glade_id(ix)` lookup resolves
+  /// to `Some(&PT)` by post-order invariant.
   fn traverse_glade(
     &mut self,
     glade: &mut Glade,
-    children: &HashMap<usize, Self::ParseTree>,
+    children: &[Option<Self::ParseTree>],
     state: &mut Self::ParseState,
   ) -> Result<Self::ParseTree>;
 }
@@ -135,7 +152,11 @@ impl ASF {
     TR::ParseTree: Clone,
   {
     let peak = self.peak()?;
-    let mut cache: HashMap<usize, TR::ParseTree> = HashMap::new();
+    // Glade IDs are assigned sequentially from 0 by `register_glade`
+    // / `obtain_nidset_id`, so a `Vec<Option<PT>>` indexed by id
+    // replaces the prior `HashMap<usize, PT>` cache with O(1)
+    // array-index loads and no hash probes.
+    let mut cache: Vec<Option<TR::ParseTree>> = Vec::new();
     let output = self.traverse_glade_recursive(peak, &mut cache, traverser, &mut init_state)?;
     Ok((output, init_state))
   }
@@ -145,14 +166,14 @@ impl ASF {
   fn traverse_glade_recursive<PT, PS>(
     &mut self,
     glade_id: usize,
-    cache: &mut HashMap<usize, PT>,
+    cache: &mut Vec<Option<PT>>,
     traverser: &mut dyn Traverser<ParseTree = PT, ParseState = PS>,
     state: &mut PS,
   ) -> Result<PT>
   where
     PT: Clone,
   {
-    if let Some(cached) = cache.get(&glade_id) {
+    if let Some(Some(cached)) = cache.get(glade_id) {
       return Ok(cached.clone());
     }
 
@@ -189,11 +210,11 @@ impl ASF {
 
     // Recurse into each child (post-order).
     for child_id in child_ids {
-      if cache.contains_key(&child_id) {
+      if matches!(cache.get(child_id), Some(Some(_))) {
         continue;
       }
       let child_output = self.traverse_glade_recursive(child_id, cache, traverser, state)?;
-      cache.insert(child_id, child_output);
+      cache_set(cache, child_id, child_output);
     }
 
     // Now the parent's children are all in `cache`. Hand the parent
@@ -204,8 +225,8 @@ impl ASF {
       .get_mut(&glade_id)
       .expect("glade entry must exist after obtain_glade");
     glade.rewind();
-    let output = traverser.traverse_glade(glade, cache, state)?;
-    cache.insert(glade_id, output.clone());
+    let output = traverser.traverse_glade(glade, cache.as_slice(), state)?;
+    cache_set(cache, glade_id, output.clone());
     Ok(output)
   }
 
