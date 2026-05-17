@@ -3,6 +3,17 @@
 > Audit performed 2026-05-17 across the 17 commits on
 > `abstract_syntax_forests` that aren't on `master`. The work is
 > **scaffolding-stage**, not feature-complete.
+>
+> **Downstream context**: the primary consumer of this ASF
+> infrastructure is [latexml-oxide](https://github.com/dginev/latexml-oxide),
+> whose math parser currently uses Tree-iteration with a 5000-tree
+> cap as a defensive bandage against per-tree cost. The migration
+> plan to ASF traversal — and the mapping of the three-stage
+> "grammar / actions / pragmas" pipeline onto the ASF callback
+> model — is documented at
+> [latexml-oxide:docs/MATH_PARSER_AND_ASF.md](https://github.com/dginev/latexml-oxide/blob/master/docs/MATH_PARSER_AND_ASF.md).
+> Read that doc for *why* this matters; read this one for *what
+> needs to be built*.
 
 ## What's complete and tested
 
