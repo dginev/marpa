@@ -217,11 +217,29 @@ impl ASF {
   }
 
   fn peak(&mut self) -> Result<usize> {
-    let bocage = &mut self.bocage;
-    let augment_or_node_id = bocage.top_or_node()?;
-    let augment_and_node_id = self.or_nodes[augment_or_node_id as usize].nids[0];
-    let start_or_node_id = bocage.and_node_cause(augment_and_node_id)?;
-    let glade_id = self.obtain_nidset_id(vec![start_or_node_id]);
+    let augment_or_node_id = self.bocage.top_or_node()?;
+    // The augment or-node's and-nodes correspond to **distinct
+    // top-level parses** — for an ambiguous grammar (the
+    // latexml-oxide math parser is the motivating example), this
+    // is the only place where top-level alternatives are
+    // exposed by libmarpa. Aggregate **all** of their causes into
+    // the peak glade's nidset, so `compute_symches` groups them by
+    // their underlying XRL and the user's `Traverser` sees every
+    // alternative top-rule reduction.
+    //
+    // Perl `Marpa::R2::ASF::peak` only takes `[0]`; on the panda
+    // grammar (single start rule) it doesn't matter, but the math
+    // parser's top-level rule has multiple alternatives that the
+    // single-pick model loses.
+    let augment_and_node_ids = self.or_nodes[augment_or_node_id as usize].nids.clone();
+    let mut cause_nids: Vec<i32> = Vec::with_capacity(augment_and_node_ids.len());
+    for and_id in augment_and_node_ids {
+      let cause = self.bocage.and_node_cause(and_id)?;
+      if !cause_nids.contains(&cause) {
+        cause_nids.push(cause);
+      }
+    }
+    let glade_id = self.obtain_nidset_id(cause_nids);
     self.register_glade(glade_id);
     self.obtain_glade(glade_id)?;
     Ok(glade_id)
