@@ -629,3 +629,74 @@ math-heavy fixtures that can report both wall time and
 - release or bench profile only;
 - wall, user/sys CPU, max RSS, math_parse time if available, and ASF
   counters.
+
+## Closing measurement (2026-05-18) — perf/asf-allocation-trim
+
+The `perf/asf-allocation-trim` branch carries five changes:
+
+1. `f8c6a96` — skip cache-resident children when collecting
+   recursion targets in `traverse_glade_recursive`.
+2. `762541a` — `obtain_singleton_nidset_id(i32)` fast path for
+   the dominant `vec![cause_nid]` shape.
+3. `f7e1311` — bocage metadata cache overhead trim.
+4. `501f131` — avoid cloning singleton source nidsets.
+5. `5f6a19e` — `parse_hybrid_with_and_node_limit(...)` + new
+   `HybridParseResult::AmbiguousTree(Tree, BocageStats)` variant
+   for large-bocage Tree-iter fallback. New thin API:
+   `Order::or_node_and_node_count_opt(usize)`.
+
+Validation against latexml-oxide on the 100-paper math-bound
+sample (top-100 by `phase_math_parse_us` in wp4 telemetry; the
+same fixture used for the prior HYBRID-no-cap measurement
+recorded in `latexml-oxide/docs/PERFORMANCE.md`):
+
+| Mode | OK / 100 | OOM aborts | Wall (n=98) | Δ vs LEGACY |
+|---|---:|---:|---:|---:|
+| LEGACY | 98 | 0 | 3188.6 s | — |
+| HYBRID, no cap (prior) | 79 | **19** | 2955.4 s on n=79 | +13.2 % on that subset |
+| **HYBRID, cap = 500 and-nodes** | **98** | **0** | **2274.3 s** | **−28.7 %** |
+
+The cap+fallback **fixes the 19 OOMs** the no-cap hybrid path
+introduced AND makes the corpus measurably faster than LEGACY
+on the same 98-paper subset: every paper's bocage either fits
+in ASF (cheap path with singleton + clone trims) or falls
+through to libmarpa Tree iteration (already-computed bocage
+shared — strictly cheaper than the LEGACY two-pass).
+
+Worst per-paper regression: +2.0 %. Only 2 of 98 papers slower
+than LEGACY at all. Largest single-paper gain: −51 %.
+
+The cap is wired with default 500 in latexml-oxide
+(`LATEXML_MARPA_HYBRID_AND_NODE_LIMIT`); set to `0` or `none`
+to disable. Treat the cap as a safety net — each formula that
+fires it is a candidate for grammar-level category tightening
+or earlier action-time pruning, not for raising the cap.
+
+### Items closed and items deferred
+
+**Closed in this branch:**
+- singleton nidset/glade cache (top item from the prior
+  next-machine list)
+- bocage-metadata-cache overhead trim (item 3)
+- source-nidset clone elimination (incremental win)
+- large-bocage Tree-iter fallback (item 2 from
+  `latexml-oxide/docs/PERFORMANCE.md`'s "Actionable next steps")
+
+**Open for follow-up:**
+- `RefCell` → `&mut self` API on bocage metadata caches —
+  still gated on a separate before/after profile against
+  ASF_ONLY=1.
+- Flat factoring storage — still **not justified** on May 18
+  counters; deferred indefinitely without new profile evidence.
+- Demand-driven `rh_value(i)` API — large change, gated on
+  evidence that semantic pruning can reject parent alternatives
+  before children construct.
+
+### Validation method actually used
+
+Per the prior request: math-heavy fixture (100 papers, top by
+`phase_math_parse_us`), release+native+cortex profile, 8
+workers, 180 s timeout, 8 GB ulimit. Both LEGACY and HYBRID
+runs are against marpa commit `5f6a19e` so the comparison
+isolates the routing / cap decision rather than any unrelated
+binary drift.
