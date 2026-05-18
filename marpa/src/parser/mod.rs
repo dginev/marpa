@@ -297,10 +297,7 @@ impl Parser {
 
 fn bocage_stats(order: &mut Order) -> Result<BocageStats> {
     let mut stats = BocageStats::default();
-    loop {
-        let Some(and_node_count) = order.or_node_and_node_count_opt(stats.or_node_count)? else {
-            break;
-        };
+    while let Some(and_node_count) = order.or_node_and_node_count_opt(stats.or_node_count)? {
         stats.and_node_count += and_node_count;
         stats.max_and_nodes_per_or_node = stats.max_and_nodes_per_or_node.max(and_node_count);
         stats.or_node_count += 1;
