@@ -9,6 +9,13 @@ use crate::thin::{Bocage, Order, Recognizer};
 pub use self::glade::*;
 pub use self::nidset::*;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VisitState {
+  Unseen,
+  Visiting,
+  Done,
+}
+
 /// Write `val` into the sparse `cache` at `idx`, growing the Vec with
 /// `None` placeholders as needed. The cache is allocated once per
 /// `traverse(...)` call and is sparse-by-design: a glade id ≤ max
@@ -75,14 +82,6 @@ pub struct ASF {
   ordering: Order,
 }
 
-/// Resize `slot.len()` up to `idx + 1` with `None` and set the slot.
-fn vec_slot_set<T>(slot: &mut Vec<Option<T>>, idx: usize, val: T) {
-  if slot.len() <= idx {
-    slot.resize_with(idx + 1, || None);
-  }
-  slot[idx] = Some(val);
-}
-
 /// Get a mutable ref to the slot at `idx`, growing as needed and
 /// initializing with `Default::default()`. Mirrors the prior
 /// `HashMap::entry(idx).or_default()` pattern.
@@ -126,8 +125,16 @@ impl ASF {
   }
 
   pub fn new(recce: Recognizer) -> Result<Self> {
-    // Initialize all usual thin:: structs here, we'll need them
     let bocage = Bocage::new(&recce)?;
+    Self::from_parts(recce, bocage)
+  }
+
+  /// Build an ASF from an already-created recognizer/bocage pair.
+  ///
+  /// This is useful for one-pass hybrid callers that need to inspect
+  /// `Bocage::ambiguity_metric()` before deciding whether to traverse
+  /// the ASF. Passing the bocage through avoids constructing it twice.
+  pub fn from_parts(recce: Recognizer, bocage: Bocage) -> Result<Self> {
     let mut ordering = bocage.get_ordering().expect(
       "An attempt was make to create an ASF for a null parse\n
           A null parse is a successful parse of a zero-length string\n
@@ -186,25 +193,42 @@ impl ASF {
     // replaces the prior `HashMap<usize, PT>` cache with O(1)
     // array-index loads and no hash probes.
     let mut cache: Vec<Option<TR::ParseTree>> = Vec::new();
-    let output = self.traverse_glade_recursive(peak, &mut cache, traverser, &mut init_state)?;
+    let mut visit_state: Vec<VisitState> = Vec::new();
+    let output =
+      self.traverse_glade_recursive(peak, &mut cache, &mut visit_state, traverser, &mut init_state)?;
     Ok((output, init_state))
   }
 
   /// Post-order recursive driver. Visits each child glade once
-  /// (memoized in `cache`); cycle-safe via the `visited` flag.
-  fn traverse_glade_recursive<PT, PS>(
+  /// (memoized in `cache`); cycle-safe via `visit_state`.
+  fn traverse_glade_recursive<TR>(
     &mut self,
     glade_id: usize,
-    cache: &mut Vec<Option<PT>>,
-    traverser: &mut dyn Traverser<ParseTree = PT, ParseState = PS>,
-    state: &mut PS,
-  ) -> Result<PT>
+    cache: &mut Vec<Option<TR::ParseTree>>,
+    visit_state: &mut Vec<VisitState>,
+    traverser: &mut TR,
+    state: &mut TR::ParseState,
+  ) -> Result<TR::ParseTree>
   where
-    PT: Clone,
+    TR: Traverser,
+    TR::ParseTree: Clone,
   {
     if let Some(Some(cached)) = cache.get(glade_id) {
       return Ok(cached.clone());
     }
+    if visit_state.len() <= glade_id {
+      visit_state.resize(glade_id + 1, VisitState::Unseen);
+    }
+    match visit_state[glade_id] {
+      VisitState::Unseen => {},
+      VisitState::Visiting => {
+        return Err(format!("cycle detected while traversing ASF glade {glade_id}").into());
+      },
+      VisitState::Done => {
+        return Err(format!("ASF glade {glade_id} marked done without cached output").into());
+      },
+    }
+    visit_state[glade_id] = VisitState::Visiting;
 
     // Ensure the glade's symches are populated, then enumerate the
     // distinct child glade ids reachable from any (symch, factoring,
@@ -242,8 +266,7 @@ impl ASF {
       if matches!(cache.get(child_id), Some(Some(_))) {
         continue;
       }
-      let child_output = self.traverse_glade_recursive(child_id, cache, traverser, state)?;
-      cache_set(cache, child_id, child_output);
+      self.traverse_glade_recursive(child_id, cache, visit_state, traverser, state)?;
     }
 
     // Now the parent's children are all in `cache`. Hand the parent
@@ -257,6 +280,7 @@ impl ASF {
     glade.rewind();
     let output = traverser.traverse_glade(glade, cache.as_slice(), state)?;
     cache_set(cache, glade_id, output.clone());
+    visit_state[glade_id] = VisitState::Done;
     Ok(output)
   }
 
@@ -373,33 +397,38 @@ impl ASF {
       // grouping for and-nodes that share a predecessor; here we do
       // the equivalent by grouping contiguous same-predecessor
       // and-nodes within each or-node we visit).
-      let mut raw_factorings: Vec<Vec<Vec<i32>>> = Vec::new();
       let mut omitted = false;
-      for &nid in &group_nids {
-        if raw_factorings.len() >= factoring_max {
-          omitted = true;
-          break;
+      let factorings = if let Some(singleton_factoring) = self.try_singleton_factoring(&group_nids)? {
+        vec![singleton_factoring]
+      } else {
+        let mut raw_factorings: Vec<Vec<Vec<i32>>> = Vec::new();
+        for &nid in &group_nids {
+          if raw_factorings.len() >= factoring_max {
+            omitted = true;
+            break;
+          }
+          let mut work_stack: Vec<Vec<i32>> = Vec::new();
+          self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, factoring_max, &mut omitted);
+          if omitted {
+            break;
+          }
         }
-        let mut work_stack: Vec<Vec<i32>> = Vec::new();
-        self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, factoring_max, &mut omitted);
-        if omitted {
-          break;
-        }
-      }
 
-      // Translate each per-position cause-nid set into a registered
-      // child glade id (a multi-nid nidset becomes a multi-source
-      // glade — this is where parallel alternatives unify).
-      let mut factorings: Vec<Vec<usize>> = Vec::with_capacity(raw_factorings.len());
-      for position_sets in raw_factorings {
-        let mut child_glade_ids: Vec<usize> = Vec::with_capacity(position_sets.len());
-        for cause_nids in position_sets {
-          let child_glade_id = self.obtain_nidset_id(cause_nids);
-          self.register_glade(child_glade_id);
-          child_glade_ids.push(child_glade_id);
+        // Translate each per-position cause-nid set into a registered
+        // child glade id (a multi-nid nidset becomes a multi-source
+        // glade — this is where parallel alternatives unify).
+        let mut factorings: Vec<Vec<usize>> = Vec::with_capacity(raw_factorings.len());
+        for position_sets in raw_factorings {
+          let mut child_glade_ids: Vec<usize> = Vec::with_capacity(position_sets.len());
+          for cause_nids in position_sets {
+            let child_glade_id = self.obtain_nidset_id(cause_nids);
+            self.register_glade(child_glade_id);
+            child_glade_ids.push(child_glade_id);
+          }
+          factorings.push(child_glade_ids);
         }
-        factorings.push(child_glade_ids);
-      }
+        factorings
+      };
 
       symches.push(Symch {
         rule_id,
@@ -422,6 +451,48 @@ impl ASF {
     glade.cursor = (0, 0);
 
     Ok(glade)
+  }
+
+  /// Fast path for the common unbranched predecessor-chain shape:
+  /// exactly one source nid for the symch and exactly one and-node at
+  /// every OR node along the chain. This emits the single factoring
+  /// directly and avoids the general grouping/work-stack machinery.
+  fn try_singleton_factoring(&mut self, group_nids: &[i32]) -> Result<Option<Vec<usize>>> {
+    if group_nids.len() != 1 {
+      return Ok(None);
+    }
+
+    let mut or_node_id = group_nids[0];
+    let mut child_nids: Vec<i32> = Vec::new();
+
+    loop {
+      let and_node_id = match self.or_nodes.get(or_node_id as usize) {
+        Some(ns) if ns.nids.len() == 1 => ns.nids[0],
+        _ => return Ok(None),
+      };
+
+      let cause = self.bocage.and_node_cause(and_node_id)?;
+      let cause_nid = if cause < 0 {
+        and_node_to_nid(and_node_id)
+      } else {
+        cause
+      };
+      child_nids.push(cause_nid);
+
+      match self.bocage.and_node_predecessor(and_node_id) {
+        Some(pred) if pred >= 0 => or_node_id = pred,
+        _ => {
+          child_nids.reverse();
+          let mut child_glade_ids = Vec::with_capacity(child_nids.len());
+          for cause_nid in child_nids {
+            let child_glade_id = self.obtain_nidset_id(vec![cause_nid]);
+            self.register_glade(child_glade_id);
+            child_glade_ids.push(child_glade_id);
+          }
+          return Ok(Some(child_glade_ids));
+        },
+      }
+    }
   }
 
   /// DFS over the predecessor chain of `or_node_id` collecting full

@@ -55,6 +55,45 @@ fn ambiguity_metric_oracle_reports_unambiguous() {
 }
 
 #[test]
+fn hybrid_parse_returns_tree_for_unambiguous_input() {
+  let mut g = Grammar::new().expect("grammar new");
+  let a = g.literal_string(None, "a").expect("literal a");
+  let s = g.rule(None, &[a]).expect("rule S ::= a");
+  g.set_start(s).expect("set_start");
+  let mut parser = Parser::with_grammar(g.unwrap());
+  let mut traverser = PanicTraverser;
+
+  match parser
+    .parse_hybrid(ByteScanner::new(Cursor::new("a")), (), &mut traverser)
+    .expect("hybrid parse should succeed")
+  {
+    HybridParseResult::Unambiguous(tree) => {
+      assert_eq!(tree.count(), 1, "unambiguous branch should return the single Tree iterator");
+    },
+    HybridParseResult::Ambiguous(_, _) => panic!("unambiguous grammar should not traverse ASF"),
+  }
+}
+
+#[test]
+fn hybrid_parse_traverses_asf_for_ambiguous_input() {
+  let (mut parser, _b, rule_names) = build_grammar().expect("grammar build should succeed");
+  let mut traverser = ExhaustiveTraverser { rule_names };
+
+  match parser
+    .parse_hybrid(ByteScanner::new(Cursor::new(PANDA_INPUT)), (), &mut traverser)
+    .expect("hybrid parse should succeed")
+  {
+    HybridParseResult::Unambiguous(_) => panic!("panda grammar should route to ASF"),
+    HybridParseResult::Ambiguous(alts, ()) => {
+      let mut unique = alts;
+      unique.sort();
+      unique.dedup();
+      assert_eq!(unique.len(), 3, "ambiguous branch should expose the three panda parses");
+    },
+  }
+}
+
+#[test]
 fn asf_traverse_parse() {
   let runner_result = runner_asf_traverse();
   assert!(runner_result.is_ok(), "failed to run asf traversal: {:?}", runner_result.err());
@@ -260,6 +299,21 @@ struct ExhaustiveTraverser {
 struct PruningTraverser {
   #[allow(dead_code)]
   rule_names: HashMap<i32, &'static str>,
+}
+struct PanicTraverser;
+
+impl Traverser for PanicTraverser {
+  type ParseTree = ();
+  type ParseState = ();
+
+  fn traverse_glade(
+    &mut self,
+    _glade: &mut Glade,
+    _children: &[Option<Self::ParseTree>],
+    _state: &mut Self::ParseState,
+  ) -> Result<Self::ParseTree> {
+    panic!("unambiguous hybrid parse should not invoke ASF traversal")
+  }
 }
 
 impl Traverser for ExhaustiveTraverser {

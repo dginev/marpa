@@ -41,6 +41,18 @@ pub struct Parser {
     grammar: Grammar,
     state: MarpaState,
 }
+
+/// Result of a one-pass parse that routes by raw Marpa ambiguity.
+///
+/// `Unambiguous` contains the ordinary libmarpa tree iterator for
+/// callers that want the cheaper Step/value path. `Ambiguous` contains
+/// the result of ASF traversal. The ambiguity decision is grammar-level
+/// only; semantic pruning remains the caller's responsibility.
+pub enum HybridParseResult<PT, PS> {
+    Unambiguous(Tree),
+    Ambiguous(PT, PS),
+}
+
 impl Default for Parser {
     fn default() -> Self {
         Parser {
@@ -66,6 +78,19 @@ impl Parser {
 
     pub fn with_grammar(grammar: Grammar) -> Self {
         Parser { state: G, grammar }
+    }
+
+    /// Construct a parser around a grammar that has already been
+    /// precomputed.
+    ///
+    /// Most callers should use `with_grammar`; this is for owners that
+    /// intentionally cache a precomputed grammar and need a fresh
+    /// recognizer without running `Grammar::precompute()` again.
+    pub fn with_precomputed_grammar(grammar: Grammar) -> Self {
+        Parser {
+            state: GReady,
+            grammar,
+        }
     }
 
     fn adv_marpa(&mut self) -> Result<()> {
@@ -156,6 +181,50 @@ impl Parser {
         if let R(recce) = mem::replace(&mut self.state, GReady) {
             let mut asf = ASF::new(recce)?;
             asf.traverse(init_state, traverser)
+        } else {
+            panic!("Parser::read must always terminate in the R state!");
+        }
+    }
+
+    /// Read `tokens` once, build one bocage, and route by raw Marpa
+    /// ambiguity.
+    ///
+    /// For unambiguous parses this returns the ordinary `Tree` iterator,
+    /// avoiding ASF symch/factoring construction. For ambiguous parses it
+    /// traverses the ASF using the supplied traverser. This deliberately
+    /// does not compose `ambiguity_metric()` with
+    /// `parse_and_traverse_forest`, because that would scan the token
+    /// stream and build recognizer state twice.
+    ///
+    /// Parser state after return follows the branch: `Unambiguous` leaves
+    /// the parser in `T`, matching `run_recognizer`; `Ambiguous` consumes
+    /// the recognizer and leaves the parser ready to build a fresh
+    /// recognizer on the next parse, matching `parse_and_traverse_forest`.
+    pub fn parse_hybrid<T, U, TR>(
+        &mut self,
+        tokens: T,
+        init_state: TR::ParseState,
+        traverser: &mut TR,
+    ) -> Result<HybridParseResult<TR::ParseTree, TR::ParseState>>
+    where
+        T: TokenSource<U>,
+        U: Token,
+        TR: Traverser,
+        TR::ParseTree: Clone,
+    {
+        self.read(tokens)?;
+        if let R(recce) = mem::replace(&mut self.state, GReady) {
+            let bocage = Bocage::new(&recce)?;
+            if bocage.ambiguity_metric()? == 1 {
+                let order = Order::new(&bocage)?;
+                let tree = Tree::new(order)?;
+                self.state = T(tree.clone());
+                Ok(HybridParseResult::Unambiguous(tree))
+            } else {
+                let mut asf = ASF::from_parts(recce, bocage)?;
+                let (output, state) = asf.traverse(init_state, traverser)?;
+                Ok(HybridParseResult::Ambiguous(output, state))
+            }
         } else {
             panic!("Parser::read must always terminate in the R state!");
         }
