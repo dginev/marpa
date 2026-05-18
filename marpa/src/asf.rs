@@ -450,7 +450,7 @@ impl ASF {
             break;
           }
           let mut work_stack: Vec<Vec<i32>> = Vec::new();
-          self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, factoring_max, &mut omitted);
+          self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, factoring_max, &mut omitted)?;
           if omitted {
             break;
           }
@@ -554,15 +554,11 @@ impl ASF {
     out: &mut Vec<Vec<Vec<i32>>>,
     factoring_max: usize,
     omitted: &mut bool,
-  ) {
+  ) -> Result<()> {
     if *omitted || out.len() >= factoring_max {
       *omitted = true;
-      return;
+      return Ok(());
     }
-    let and_node_ids: Vec<i32> = match self.or_nodes.get(or_node_id as usize) {
-      Some(ns) => ns.nids.clone(),
-      None => return,
-    };
 
     // Group contiguous same-predecessor and-nodes. Each group
     // becomes one RHS-position step (with the cause-nids unified
@@ -571,41 +567,52 @@ impl ASF {
     //
     // Mirrors Perl `set_last_choice`: extend the range while
     // predecessors match; when they differ, start a new group.
+    //
+    // Hold a borrow into `self.or_nodes` for the iteration only;
+    // the borrow is released before the recursion in `groups`
+    // below. `self.and_node_info(_)` uses RefCell internally so
+    // it composes with the shared `self.or_nodes` borrow.
     let mut groups: Vec<(Option<i32>, Vec<i32>)> = Vec::new();
-    for &and_id in &and_node_ids {
-      // Use the cached metadata for cause/predecessor — these are
-      // the inner FFI calls collect_factorings is built around, so
-      // caching them turns the per-and-node cost into a Vec index.
-      let info = self.and_node_info(and_id).unwrap_or(AndNodeInfo {
-        cause: -1,
-        predecessor: None,
-        symbol: None,
-      });
-      let pred: Option<i32> = info.predecessor;
-      let cause_nid: i32 = if info.cause < 0 {
-        // Token and-node: encode the and-node as a negative nid.
-        and_node_to_nid(and_id)
-      } else {
-        // Rule and-node: cause is the child or-node id.
-        info.cause
+    {
+      let and_node_ids: &[i32] = match self.or_nodes.get(or_node_id as usize) {
+        Some(ns) => ns.nids.as_slice(),
+        None => return Ok(()),
       };
-      // Extend the previous group iff the predecessor matches;
-      // otherwise start a new group.
-      if let Some(last) = groups.last_mut()
-        && last.0 == pred
-      {
-        if !last.1.contains(&cause_nid) {
-          last.1.push(cause_nid);
+      for &and_id in and_node_ids {
+        // Use the cached metadata for cause/predecessor — these
+        // are the inner FFI calls collect_factorings is built
+        // around, so caching them turns the per-and-node cost
+        // into a Vec index. A genuine FFI error here is
+        // propagated as the function's `Result` rather than
+        // silently mapped to a token-and-node default; the prior
+        // `.unwrap_or(default)` masked real bugs.
+        let info = self.and_node_info(and_id)?;
+        let pred: Option<i32> = info.predecessor;
+        let cause_nid: i32 = if info.cause < 0 {
+          // Token and-node: encode the and-node as a negative nid.
+          and_node_to_nid(and_id)
+        } else {
+          // Rule and-node: cause is the child or-node id.
+          info.cause
+        };
+        // Extend the previous group iff the predecessor matches;
+        // otherwise start a new group.
+        if let Some(last) = groups.last_mut()
+          && last.0 == pred
+        {
+          if !last.1.contains(&cause_nid) {
+            last.1.push(cause_nid);
+          }
+          continue;
         }
-        continue;
+        groups.push((pred, vec![cause_nid]));
       }
-      groups.push((pred, vec![cause_nid]));
     }
 
     for (pred, cause_nids) in groups {
       if out.len() >= factoring_max {
         *omitted = true;
-        return;
+        return Ok(());
       }
       work_stack.push(cause_nids);
       match pred {
@@ -615,14 +622,15 @@ impl ASF {
           out.push(factoring);
         }
         Some(pred_or) => {
-          self.collect_factorings(pred_or, work_stack, out, factoring_max, omitted);
+          self.collect_factorings(pred_or, work_stack, out, factoring_max, omitted)?;
         }
       }
       work_stack.pop();
       if *omitted {
-        return;
+        return Ok(());
       }
     }
+    Ok(())
   }
 
   // ---- Bocage metadata caches ----
