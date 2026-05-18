@@ -106,6 +106,7 @@ pub struct ASF {
   /// Same indexing convention as `nidset_by_id`.
   glades: Vec<Option<Glade>>,
   intset_by_key: HashMap<Vec<i32>, usize>,
+  singleton_nidset_by_nid: HashMap<i32, usize>,
   or_nodes: Vec<Nidset>,
   /// Lazy per-and-node FFI metadata cache. Sized to grow on first
   /// query; entries are stable once filled.
@@ -141,6 +142,9 @@ impl ASF {
   }
 
   fn obtain_nidset_id(&mut self, nids: Vec<i32>) -> usize {
+    if let [nid] = nids.as_slice() {
+      return self.obtain_singleton_nidset_id(*nid);
+    }
     let (id, nids) = self.intset_id(nids);
     if self.nidset_by_id.len() <= id {
       self.nidset_by_id.resize_with(id + 1, || None);
@@ -149,6 +153,33 @@ impl ASF {
       self.nidset_by_id[id] = Some(Nidset { id, nids });
     }
     id
+  }
+
+  /// Hot-path singleton nidset lookup.
+  ///
+  /// Most ASF factorings in latexml-oxide are unbranched predecessor
+  /// chains, so they repeatedly need a child glade for exactly one nid.
+  /// Avoid allocating/sorting/hashing a fresh one-element Vec on every
+  /// lookup; allocate the backing `Nidset` only on first sighting.
+  fn obtain_singleton_nidset_id(&mut self, nid: i32) -> usize {
+    if let Some(id) = self.singleton_nidset_by_nid.get(&nid).copied() {
+      return id;
+    }
+
+    self.next_inset_id += 1;
+    let id = self.next_inset_id;
+    if self.nidset_by_id.len() <= id {
+      self.nidset_by_id.resize_with(id + 1, || None);
+    }
+    self.nidset_by_id[id] = Some(Nidset { id, nids: vec![nid] });
+    self.singleton_nidset_by_nid.insert(nid, id);
+    id
+  }
+
+  fn obtain_singleton_glade_id(&mut self, nid: i32) -> usize {
+    let glade_id = self.obtain_singleton_nidset_id(nid);
+    self.register_glade(glade_id);
+    glade_id
   }
 
   /// Make sure a `Glade` exists in `self.glades` for `glade_id` and
@@ -194,6 +225,7 @@ impl ASF {
       nidset_by_id: Vec::new(),
       glades: Vec::new(),
       intset_by_key: HashMap::new(),
+      singleton_nidset_by_nid: HashMap::new(),
       or_nodes,
       // OR-node id range is bounded by `or_nodes.len()` (we enumerated
       // them upfront). Pre-size to avoid growth in the hot path.
@@ -429,8 +461,7 @@ impl ASF {
         // sentinel meaning "this glade IS a token leaf".
         // The token's own glade-id is the singleton nidset wrapping
         // the same negative nid we're already standing on.
-        let token_glade_id = self.obtain_nidset_id(vec![first_nid]);
-        self.register_glade(token_glade_id);
+        let token_glade_id = self.obtain_singleton_glade_id(first_nid);
         symches.push(Symch {
           rule_id: -1,
           factorings: vec![vec![token_glade_id]],
@@ -472,8 +503,13 @@ impl ASF {
         for position_sets in raw_factorings {
           let mut child_glade_ids: Vec<usize> = Vec::with_capacity(position_sets.len());
           for cause_nids in position_sets {
-            let child_glade_id = self.obtain_nidset_id(cause_nids);
-            self.register_glade(child_glade_id);
+            let child_glade_id = if let [nid] = cause_nids.as_slice() {
+              self.obtain_singleton_glade_id(*nid)
+            } else {
+              let child_glade_id = self.obtain_nidset_id(cause_nids);
+              self.register_glade(child_glade_id);
+              child_glade_id
+            };
             child_glade_ids.push(child_glade_id);
           }
           factorings.push(child_glade_ids);
@@ -550,8 +586,7 @@ impl ASF {
         child_nids.reverse();
         let mut child_glade_ids = Vec::with_capacity(child_nids.len());
         for cause_nid in child_nids {
-          let child_glade_id = self.obtain_nidset_id(vec![cause_nid]);
-          self.register_glade(child_glade_id);
+          let child_glade_id = self.obtain_singleton_glade_id(cause_nid);
           child_glade_ids.push(child_glade_id);
         }
         return Ok(Some(child_glade_ids));
