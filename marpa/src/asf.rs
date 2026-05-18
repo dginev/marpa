@@ -414,28 +414,33 @@ impl ASF {
     // --- Phase 1: gather source nids and sort by sort_ix (== XRL or
     // token-id, depending on the nid sign). Same as the original
     // scaffolding, but cleaned up.
-    let source_nids: Vec<i32> = self
-      .nidset_by_id
-      .get(glade_id)
-      .and_then(Option::as_ref)
-      .ok_or_else(|| format!("no nidset registered for glade ID {glade_id}"))?
-      .nids
-      .clone();
-    with_stats(|s| {
-      let n = source_nids.len() as u32;
-      if n > s.max_source_nids_per_glade {
-        s.max_source_nids_per_glade = n;
+    let (single_source_nid, source_nids): (Option<i32>, Option<Vec<i32>>) = {
+      let nidset = self
+        .nidset_by_id
+        .get(glade_id)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| format!("no nidset registered for glade ID {glade_id}"))?;
+      with_stats(|s| {
+        let n = nidset.nids.len() as u32;
+        if n > s.max_source_nids_per_glade {
+          s.max_source_nids_per_glade = n;
+        }
+      });
+      if let [nid] = nidset.nids.as_slice() {
+        (Some(*nid), None)
+      } else {
+        (None, Some(nidset.nids.clone()))
       }
-    });
+    };
 
-    if source_nids.len() == 1 {
-      let first_nid = source_nids[0];
+    if let Some(first_nid) = single_source_nid {
       let symbol_id = self.nid_symbol_id(first_nid)?;
       let is_token_glade = first_nid < 0;
-      let symch = self.build_symch_for_group(&source_nids)?;
+      let symch = self.build_symch_for_group(&[first_nid])?;
       return self.finish_glade(glade_id, vec![symch], symbol_id, is_token_glade);
     }
 
+    let source_nids = source_nids.expect("non-singleton glades keep cloned source nids");
     let mut source_data: Vec<(i32, i32)> = Vec::with_capacity(source_nids.len());
     for nid in &source_nids {
       let sort_ix = self.nid_sort_ix(*nid)?;
