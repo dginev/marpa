@@ -44,7 +44,6 @@ pub struct Glade {
   pub(crate) id: usize,
   pub(crate) symbol_id: i32,
   pub(crate) registered: bool,
-  pub(crate) visited: bool,
   pub(crate) symches: Vec<Symch>,
   /// `true` iff this glade wraps a single token-and-node. Token
   /// glades have `symches.len() == 1` with `rule_id == -1` and a
@@ -61,7 +60,6 @@ impl Default for Glade {
       id: 0,
       symbol_id: -1,
       registered: false,
-      visited: false,
       symches: Vec::new(),
       is_token: false,
       cursor: (0, 0),

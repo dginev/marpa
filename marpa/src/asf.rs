@@ -63,6 +63,38 @@ pub trait Traverser {
   ) -> Result<Self::ParseTree>;
 }
 
+/// Per-and-node bocage metadata. Cached so the inner factoring
+/// loops don't re-cross FFI for the same bocage node. Populated
+/// lazily on first access via `and_node_info(id)`.
+#[derive(Debug, Clone, Copy)]
+struct AndNodeInfo {
+  /// Cause or-node id, or a negative sentinel for token and-nodes.
+  cause: i32,
+  /// Predecessor or-node id, or `None` at the chain root.
+  predecessor: Option<i32>,
+  /// Token symbol id (only meaningful when `cause < 0`). Lazy: we
+  /// only fill this when `nid_sort_ix` / `nid_token_id` actually
+  /// asks for it, since rule and-nodes never use it.
+  symbol: Option<i32>,
+}
+
+/// Per-or-node bocage metadata. The `(irl_id → xrl_id → lhs_id)`
+/// chain crosses FFI three times and the values are stable for
+/// the lifetime of the bocage. Cache them per-or-node.
+///
+/// `irl_id` is computed alongside `xrl_id` and `lhs_id` (the
+/// libmarpa traversal goes irl → xrl → lhs) but no current
+/// consumer reads it; kept on the struct to document the
+/// derivation chain and to avoid re-deriving if a future caller
+/// needs it.
+#[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
+struct OrNodeInfo {
+  irl_id: i32,
+  xrl_id: i32,
+  lhs_id: i32,
+}
+
 // `Powerset` and `or_nodes` are scaffolding for the in-progress
 // ASF traversal port; keep the fields populated so the eventual
 // glade-traversal port can read them, but tell rustc not to warn yet.
@@ -77,6 +109,12 @@ pub struct ASF {
   glades: Vec<Option<Glade>>,
   intset_by_key: HashMap<Vec<i32>, usize>,
   or_nodes: Vec<Nidset>,
+  /// Lazy per-and-node FFI metadata cache. Sized to grow on first
+  /// query; entries are stable once filled.
+  and_node_cache: std::cell::RefCell<Vec<Option<AndNodeInfo>>>,
+  /// Lazy per-or-node FFI metadata cache. Same growth semantics
+  /// as `and_node_cache`.
+  or_node_cache: std::cell::RefCell<Vec<Option<OrNodeInfo>>>,
   recce: Recognizer,
   bocage: Bocage,
   ordering: Order,
@@ -157,6 +195,7 @@ impl ASF {
       or_node_id += 1;
     }
 
+    let or_node_count = or_nodes.len();
     Ok(ASF {
       next_inset_id: 0,
       nidset_by_id: Vec::new(),
@@ -164,6 +203,11 @@ impl ASF {
       intset_by_key: HashMap::new(),
       factoring_max: 42,
       or_nodes,
+      // OR-node id range is bounded by `or_nodes.len()` (we enumerated
+      // them upfront). Pre-size to avoid growth in the hot path.
+      // AND-node ids are unbounded from our side; grow on demand.
+      and_node_cache: std::cell::RefCell::new(Vec::new()),
+      or_node_cache: std::cell::RefCell::new(vec![None; or_node_count]),
       recce,
       bocage,
       ordering,
@@ -254,12 +298,10 @@ impl ASF {
       seen
     };
 
-    // Mark the parent visited up-front so a cycle (cousin pointing
-    // back through us) doesn't recurse infinitely. Honest acyclic
-    // bocages won't hit this, but defensive.
-    if let Some(Some(g)) = self.glades.get_mut(glade_id) {
-      g.visited = true;
-    }
+    // Recurse into each child (post-order). Cycle protection is
+    // handled at function entry via `visit_state[glade_id]` —
+    // setting it to `Visiting` above already shields recursion
+    // from cousin-pointer cycles.
 
     // Recurse into each child (post-order).
     for child_id in child_ids {
@@ -309,7 +351,7 @@ impl ASF {
     let augment_and_node_ids = self.or_nodes[augment_or_node_id as usize].nids.clone();
     let mut cause_nids: Vec<i32> = Vec::with_capacity(augment_and_node_ids.len());
     for and_id in augment_and_node_ids {
-      let cause = self.bocage.and_node_cause(and_id)?;
+      let cause = self.and_node_info(and_id)?.cause;
       if !cause_nids.contains(&cause) {
         cause_nids.push(cause);
       }
@@ -471,17 +513,17 @@ impl ASF {
         _ => return Ok(None),
       };
 
-      let cause = self.bocage.and_node_cause(and_node_id)?;
-      let cause_nid = if cause < 0 {
+      let info = self.and_node_info(and_node_id)?;
+      let cause_nid = if info.cause < 0 {
         and_node_to_nid(and_node_id)
       } else {
-        cause
+        info.cause
       };
       child_nids.push(cause_nid);
 
-      match self.bocage.and_node_predecessor(and_node_id) {
-        Some(pred) if pred >= 0 => or_node_id = pred,
-        _ => {
+      match info.predecessor {
+        Some(pred) => or_node_id = pred,
+        None => {
           child_nids.reverse();
           let mut child_glade_ids = Vec::with_capacity(child_nids.len());
           for cause_nid in child_nids {
@@ -531,18 +573,21 @@ impl ASF {
     // predecessors match; when they differ, start a new group.
     let mut groups: Vec<(Option<i32>, Vec<i32>)> = Vec::new();
     for &and_id in &and_node_ids {
-      let cause = self.bocage.and_node_cause(and_id).unwrap_or(-1);
-      let pred_raw = self.bocage.and_node_predecessor(and_id);
-      let pred: Option<i32> = match pred_raw {
-        Some(p) if p >= 0 => Some(p),
-        _ => None,
-      };
-      let cause_nid: i32 = if cause < 0 {
+      // Use the cached metadata for cause/predecessor — these are
+      // the inner FFI calls collect_factorings is built around, so
+      // caching them turns the per-and-node cost into a Vec index.
+      let info = self.and_node_info(and_id).unwrap_or(AndNodeInfo {
+        cause: -1,
+        predecessor: None,
+        symbol: None,
+      });
+      let pred: Option<i32> = info.predecessor;
+      let cause_nid: i32 = if info.cause < 0 {
         // Token and-node: encode the and-node as a negative nid.
         and_node_to_nid(and_id)
       } else {
         // Rule and-node: cause is the child or-node id.
-        cause
+        info.cause
       };
       // Extend the previous group iff the predecessor matches;
       // otherwise start a new group.
@@ -580,25 +625,82 @@ impl ASF {
     }
   }
 
-  #[allow(dead_code)]
-  fn glade_is_visited(&self, glade_id: usize) -> bool {
-    match self.glades.get(glade_id).and_then(|o| o.as_ref()) {
-      None => false,
-      Some(glade) => glade.visited,
+  // ---- Bocage metadata caches ----
+  //
+  // FFI calls to libmarpa for `and_node_cause/predecessor/symbol` and
+  // `or_node_irl/source_xrl/rule_lhs` were repeated per-glade in
+  // `collect_factorings`, `try_singleton_factoring`, `nid_sort_ix`,
+  // `nid_rule_id`, `nid_token_id`, and `nid_symbol_id`. The bocage
+  // is immutable for the lifetime of the ASF, so each `(id, field)`
+  // pair has a fixed answer. Cache them on first read.
+  //
+  // We use `RefCell<Vec<Option<_>>>` so the caches are populated from
+  // `&self` accessors (the hot paths that read this metadata only
+  // need `&self`). Single-threaded by design — `Recognizer` /
+  // `Bocage` aren't `Send` anyway.
+
+  /// Read (or populate then read) the cached AndNodeInfo for an
+  /// and-node id. The bocage may not have a `symbol` field for rule
+  /// and-nodes, so `cause < 0 ⟹ symbol = Some(...)` is the
+  /// invariant; for `cause >= 0` (rule and-nodes) we leave it None
+  /// and the caller falls back to or-node metadata.
+  fn and_node_info(&self, and_node_id: i32) -> Result<AndNodeInfo> {
+    let id = and_node_id as usize;
+    if let Some(Some(info)) = self.and_node_cache.borrow().get(id).copied() {
+      return Ok(info);
     }
+    let cause = self.bocage.and_node_cause(and_node_id)?;
+    let pred_raw = self.bocage.and_node_predecessor(and_node_id);
+    let predecessor = match pred_raw {
+      Some(p) if p >= 0 => Some(p),
+      _ => None,
+    };
+    let symbol = if cause < 0 {
+      Some(self.bocage.and_node_symbol(and_node_id)?)
+    } else {
+      None
+    };
+    let info = AndNodeInfo { cause, predecessor, symbol };
+    let mut cache = self.and_node_cache.borrow_mut();
+    if cache.len() <= id {
+      cache.resize(id + 1, None);
+    }
+    cache[id] = Some(info);
+    Ok(info)
+  }
+
+  /// Read (or populate then read) the cached OrNodeInfo for an
+  /// or-node id. Crosses three FFI calls on a cache miss: irl_id,
+  /// xrl_id, lhs_id.
+  fn or_node_info(&self, or_node_id: i32) -> Result<OrNodeInfo> {
+    let id = or_node_id as usize;
+    if let Some(Some(info)) = self.or_node_cache.borrow().get(id).copied() {
+      return Ok(info);
+    }
+    let irl_id = self.bocage.or_node_irl(or_node_id)?;
+    let grammar = self.recce.grammar();
+    let xrl_id = grammar.source_xrl(irl_id)?;
+    let lhs_id = grammar.rule_lhs(xrl_id)?;
+    let info = OrNodeInfo { irl_id, xrl_id, lhs_id };
+    let mut cache = self.or_node_cache.borrow_mut();
+    if cache.len() <= id {
+      cache.resize(id + 1, None);
+    }
+    cache[id] = Some(info);
+    Ok(info)
   }
 
   fn nid_sort_ix(&self, nid: i32) -> Result<i32> {
-    let grammar = self.recce.grammar();
-    let bocage = &self.bocage;
     if nid >= 0 {
-      let irl_id = bocage.or_node_irl(nid)?;
-      return grammar.source_xrl(irl_id);
+      // Rule nid → external rule id, served from the OrNode cache.
+      return Ok(self.or_node_info(nid)?.xrl_id);
     }
     let and_node_id = nid_to_and_node(nid);
-    let token_nsy_id = bocage.and_node_symbol(and_node_id)?;
-    let token_id = grammar.source_xsy(token_nsy_id)?;
-
+    let token_nsy_id = match self.and_node_info(and_node_id)?.symbol {
+      Some(s) => s,
+      None => self.bocage.and_node_symbol(and_node_id)?,
+    };
+    let token_id = self.recce.grammar().source_xsy(token_nsy_id)?;
     // -2 is reserved for 'end of data'
     Ok(-token_id - 3)
   }
@@ -609,8 +711,7 @@ impl ASF {
     if nid < 0 {
       return Ok(-1);
     }
-    let irl_id = self.bocage.or_node_irl(nid)?;
-    self.recce.grammar().source_xrl(irl_id)
+    Ok(self.or_node_info(nid)?.xrl_id)
   }
 
   pub(crate) fn nid_token_id(&self, nid: i32) -> Result<Option<i32>> {
@@ -618,10 +719,11 @@ impl ASF {
       return Ok(None);
     }
     let and_node_id = nid_to_and_node(nid);
-    let grammar_c = &self.recce.grammar;
-    let bocage = &self.bocage;
-    let token_nsy_id = bocage.and_node_symbol(and_node_id)?;
-    let token_id = grammar_c.source_xsy(token_nsy_id)?;
+    let token_nsy_id = match self.and_node_info(and_node_id)?.symbol {
+      Some(s) => s,
+      None => self.bocage.and_node_symbol(and_node_id)?,
+    };
+    let token_id = self.recce.grammar().source_xsy(token_nsy_id)?;
     Ok(Some(token_id))
   }
 
@@ -631,14 +733,9 @@ impl ASF {
     } else if nid < 0 {
       return Err(format!("No symbol ID for node ID: {nid}").into());
     }
-
-    // Not a token, so return the LHS of the rule
-    let grammar_c = &self.recce.grammar;
-    let bocage = &self.bocage;
-    let irl_id = bocage.or_node_irl(nid)?;
-    let xrl_id = grammar_c.source_xrl(irl_id)?;
-    let lhs_id = grammar_c.rule_lhs(xrl_id)?;
-    Ok(lhs_id)
+    // Not a token, so return the LHS of the rule — served from the
+    // OrNode cache (which computes irl → xrl → lhs once).
+    Ok(self.or_node_info(nid)?.lhs_id)
   }
 }
 
