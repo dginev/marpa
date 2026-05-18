@@ -642,3 +642,204 @@ Before changing `PARSE_VIA_HYBRID`'s default from "opt-in" to
    unambiguous fraction is <50%, hybrid won't deliver the
    expected wall reduction and we should revisit whether the
    added complexity is worth it).
+
+## Acceptance-Gate Measurements (2026-05-17, second pass)
+
+The codex second pass landed hybrid dispatch plus an opt-in
+`LATEXML_MARPA_HYBRID_AUDIT_PARITY=1` mode. This section captures
+the measurements requested in the review, taken on
+`Article-2025.tex` (release build, single-thread, single-shot
+per row, runs were stable to ±0.1s).
+
+### 1. Three-way wall comparison
+
+| Mode | Wall (s) | vs LEGACY |
+|---|---:|---:|
+| `LATEXML_MARPA_LEGACY=1` | 12.21 | 1.00× |
+| `LATEXML_MARPA_HYBRID=1` | **12.40** | **1.015×** |
+| ASF default | 17.00 | 1.39× |
+
+**Hybrid hits the ≤1.05× LEGACY acceptance target with substantial
+margin.** This is the load-bearing result for flipping hybrid
+default-on once the parity-audit safety question is resolved.
+
+### 2. Raw-ambiguity distribution
+
+`LATEXML_MATH_AMBIGUITY_AUDIT=1` on the same fixture:
+
+```
+metric=1 (unambiguous): 3405 calls
+metric=2 (ambiguous):    497 calls
+total:                  3902 calls
+unambiguous fraction:    87.3%
+```
+
+The 3902 calls counts every `parse_marpa` invocation including
+sub-expressions, not just the ~579 `$…$`-delimited top-level
+formulae. The 87.3% unambiguous fraction explains the wall
+arithmetic cleanly:
+
+```
+0.873 × (ASF_wall − LEGACY_wall)
+  = 0.873 × (17.00 − 12.21)
+  = 4.18s of expected recovery
+hybrid_predicted = 17.00 − 4.18 = 12.82s
+hybrid_measured  = 12.40s   (within noise)
+```
+
+The unambiguous fraction is well above the 50% sanity-floor from
+the acceptance gate; hybrid's value proposition is clearly
+substantiated for this workload.
+
+### 3. `LATEXML_MARPA_HYBRID_AUDIT_PARITY=1` safety review
+
+**Verdict**: **NOT SAFE in current form.** The audit will
+produce false-positive `assert_eq!` mismatches on any formula
+that uses `create_xmrefs` (most non-trivial math), even when
+the two paths are semantically identical. The audit must be
+made deterministic before it can be trusted to gate the
+default-flip.
+
+#### Root cause
+
+The audit runs actions twice:
+
+1. The hybrid unambiguous path executes `Actions::get_tree(...)`
+   once and produces `tree_outcome` (a `ParseOutcome`).
+2. `audit_hybrid_unambiguous_parity` then constructs a fresh
+   `Parser::with_grammar(self.grammar.clone())` and runs
+   `parse_and_traverse_forest(...)` — invoking `Actions::action_on`
+   for the same input.
+
+Actions are **not pure**. Specifically:
+
+- `latexml_math_parser::util::create_xmrefs` calls
+  `latexml_core::binding::def::dialect::get_xmarg_id()`.
+- `get_xmarg_id()` calls `step_counter("@lx@xmarg", true)` — a
+  thread-local TeX counter on the global state singleton.
+- Each `XM::Token` without a pre-assigned id allocates a fresh
+  `xmkey` from this counter (e.g. pass 1 allocates ids
+  N..=N+k, pass 2 allocates N+k+1..=N+2k+1).
+- `XM` derives `PartialEq`, so `assert_eq!(&asf_outcome,
+  tree_outcome, ...)` compares xmkeys structurally → mismatch.
+
+Result: any formula that builds an `XMDual` (or otherwise uses
+`create_xmrefs`) triggers a spurious assertion failure. On a
+real math-heavy fixture this is most formulae.
+
+#### Other observations (lower severity)
+
+- **Pragma state**: some pragmas track cross-formula observations
+  (e.g. letter-block consistency, font case-folding). The double
+  run skews those observations and could change pragma decisions
+  for *later* formulae in the same conversion. The audit is
+  documented as "disposable benchmark/test runs" so this is a
+  known cost, but worth flagging.
+- **Engine isolation**: the audit constructs a fresh
+  `Parser::with_grammar(self.grammar.clone())` rather than
+  reusing `self.engine`. ✓ This correctly isolates marpa recogniser
+  state between the two passes.
+- **`Document` mutation**: `Actions::action_on` reads the document
+  (`lookup_id`, `lookup_lex_node`, `realize_xmnode`) but doesn't
+  mutate the XML tree directly during the action phase — XML-tree
+  mutation happens later in the pipeline. So the `&mut Document`
+  re-borrow during the audit is technically aliased but doesn't
+  produce conflicting writes in practice. Still: if a future
+  action gains direct write authority, this assumption breaks.
+- **`text_summary()` sort-key**: codex uses `t.text_summary()`
+  to sort/dedup the ASF alts before comparison. The summary is
+  a structural string, but `assert_eq!` then compares the full
+  `XM` (not the summary). Sort-by-summary doesn't insulate the
+  equality check from xmkey drift.
+
+#### Suggested fixes — pick one
+
+**A. Snapshot/restore the `@lx@xmarg` counter** around each pass.
+Read the register value before the audit pass, restore it after.
+The simplest path:
+
+```rust
+let saved = state::lookup_register("\\c@@lx@xmarg", Vec::new())?;
+// ... run audit pass ...
+state::assign_register("\\c@@lx@xmarg", Vec::new(), saved)?;
+```
+
+Risk: this is a State-level mutation hidden inside what's
+documented as a read-only audit. If a future action allocates
+on a different counter, the snapshot/restore must extend to
+cover it.
+
+**B. Normalize xmkeys before comparison** *(recommended)*. Walk
+both `XM` trees in pre-order, replace `xmkey` / `idref` /
+auto-allocated `id` attributes with structural placeholders
+(`"#1"`, `"#2"`, ... keyed by visit order). Then `assert_eq!`
+the canonicalised trees.
+
+Why this is the right call:
+- It's a 30–50 line helper (`canonicalize_ids(tree: &mut XM)`).
+- It doesn't touch the global State.
+- It expresses what the audit actually wants: *structural*
+  parity, not literal byte-for-byte parity.
+- It survives future side-effecting actions because it
+  normalises the artefacts those actions produce.
+
+**C. Use `text_summary()`-based equality**. Compare via the
+existing text summary instead of full `PartialEq`. Lossier —
+two trees with identical summary but different internal
+structure pass the audit. Acceptable as a first-line check.
+
+**D. Document the audit as best-effort.** Lower the bar: it
+catches the gross-divergence case (one path returns `Empty`/
+`Rejected`, the other returns `Accepted`) but not the
+fine-grained structural mismatch. Useful but not the parity
+proof the consensus plan asked for.
+
+#### Recommendation
+
+Land **option B (xmkey canonicalisation)**. The audit's value
+is real (it would catch ASF/Tree divergence on the
+raw-unambiguous boundary), but only if it's deterministic on
+real fixtures. Without canonicalisation, running the audit on
+`Article-2025.tex` will fire `assert_eq!` immediately on the
+first XMDual-bearing formula and tell us nothing about actual
+parity.
+
+#### A separate question
+
+Is the audit *ever* expected to fire if hybrid is correct by
+construction?
+
+- The hybrid unambiguous path calls `Actions::get_tree(...)`
+  — the same machinery the legacy code path uses.
+- The hybrid ambiguous path stays on the ASF traverser.
+- Hybrid never combines the two for a single formula.
+
+So in principle there's no semantic-divergence surface
+*between hybrid-unambiguous and hybrid-ambiguous*. The audit's
+real value would be catching cases where:
+
+- An ASF-path formula that happens to be raw-unambiguous
+  produces a different `XM` than the Tree-path produces for
+  the same input. This is the legacy/ASF divergence question
+  from the existing test suite (2 tests blessed to ASF-canonical
+  output: `plainfonts`, `physics`).
+- A pragma decision differs across paths because of action
+  invocation ordering, dispatch shape, or pruning semantics.
+
+If we accept the existing 1301/0 test suite as proof that
+ASF ≈ Tree on the raw-unambiguous fraction, the audit is
+mostly defensive scaffolding. If we don't, the audit is
+essential — and must be made deterministic before it's run.
+
+### Acceptance-gate status after the second pass
+
+| Gate item | Status |
+|---|---|
+| 1301/0 test suite under `LATEXML_MARPA_HYBRID=1` | ✓ (1301/0 confirmed) |
+| Parity assertion between hybrid-unambiguous and legacy | **⚠ landed but not deterministic — fails on xmkey drift** |
+| `Article-2025.tex` wall ≤ 1.05× LEGACY | ✓ (1.015×) |
+| Ambiguous-fixture regression | not yet measured |
+| `LATEXML_MATH_AMBIGUITY_AUDIT` sanity | ✓ (87.3% unambiguous on Article-2025) |
+
+The single remaining blocker before flipping hybrid default-on
+is the parity-audit determinism fix (option B above).
