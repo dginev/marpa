@@ -556,3 +556,147 @@ reads against ~5M distinct and-node ids. Repeats come from
 `collect_factorings` recursion visiting the same and-nodes
 across multiple factorings — exactly the case the cache was
 designed to short-circuit. Cache utility confirmed.
+
+## Follow-up from latexml-oxide perf review (2026-05-18)
+
+New downstream aggregate data in
+`latexml-oxide/docs/PERFORMANCE.md` puts the Marpa/ASF work in
+context:
+
+| Phase | % wall | mean / job |
+|---|---:|---:|
+| graphics | 36.5% | 1047 ms |
+| digest | 20.3% | 582 ms |
+| math_parse | 17.0% | 488 ms |
+| build | 11.5% | 331 ms |
+
+Top perf symbols on the math-heavy `1011.1955` XML profile include
+`marpa_r_earleme_complete`, `postdot_items_create`, `bv_scan`,
+`marpa_b_new`, and `transitive_closure`. This confirms that ASF can
+help the `math_parse` band, but cannot by itself address most corpus
+wall time: recognizer and bocage work is paid before ASF traversal
+can help, and graphics/digest/build remain larger aggregate bands.
+
+### Ranked marpa-side candidates
+
+1. Keep hybrid routing as the default. The current data says this is
+   still the main win: only raw-ambiguous formulae enter ASF, and the
+   Article-2025 fixture stays within about 1% of the legacy tree path.
+2. Add a singleton nidset/glade cache in `marpa/src/asf.rs`. The
+   dominant hot-path shape repeatedly calls
+   `obtain_nidset_id(vec![cause_nid])`, which allocates, sorts, and
+   hashes a fresh one-element vector. A dedicated
+   `obtain_singleton_nidset_id(nid: i32)` keyed by `i32` should avoid
+   this work for the common singleton factoring case.
+3. If more ASF-internal work is justified after measuring the
+   singleton cache, consider removing `RefCell` from the bocage
+   metadata caches. The cache hit rates are real, but prior wall
+   timing suggested dynamic borrow overhead roughly offset the FFI
+   savings. A `&mut self` cache API may keep the cache benefit with
+   less overhead.
+4. Do not revive flat factoring storage without a new profile. The
+   May 18 counters showed tiny factoring lists, and inline storage
+   would likely increase memory for negligible runtime gain.
+
+### Downstream candidates likely to beat ASF micro-tuning
+
+The latexml-oxide aggregate reports 39.06M parse attempts producing
+45.84M surviving parses, a 17% over-parse rate. Work that avoids
+recognizer/bocage/ASF construction entirely is likely to beat further
+ASF traversal tuning:
+
+- grammar pruning for invalid ambiguity families;
+- semantic rejection before broad parse materialization where possible;
+- exact parsed-math caching for repeated normalized token streams in
+  equivalent math contexts.
+
+A demand-driven ASF API, closer to Perl's `rh_value(i)` model, may be
+worth considering only if corpus profiles show semantic pruning could
+reject parent alternatives before constructing most child outputs. It
+is a larger API change and should not be the next step without that
+evidence.
+
+### Next-machine validation request
+
+The preferred next implementation target is the singleton
+nidset/glade cache, validated on the machine with real examples. Use
+math-heavy fixtures that can report both wall time and
+`MARPA_ASF_STATS=1` counters. Compare at least:
+
+- `LATEXML_MARPA_HYBRID=1` before/after;
+- `LATEXML_MARPA_ASF_ONLY=1` before/after, to amplify ASF-internal
+  effects;
+- release or bench profile only;
+- wall, user/sys CPU, max RSS, math_parse time if available, and ASF
+  counters.
+
+## Closing measurement (2026-05-18) — perf/asf-allocation-trim
+
+The `perf/asf-allocation-trim` branch carries five changes:
+
+1. `f8c6a96` — skip cache-resident children when collecting
+   recursion targets in `traverse_glade_recursive`.
+2. `762541a` — `obtain_singleton_nidset_id(i32)` fast path for
+   the dominant `vec![cause_nid]` shape.
+3. `f7e1311` — bocage metadata cache overhead trim.
+4. `501f131` — avoid cloning singleton source nidsets.
+5. `5f6a19e` — `parse_hybrid_with_and_node_limit(...)` + new
+   `HybridParseResult::AmbiguousTree(Tree, BocageStats)` variant
+   for large-bocage Tree-iter fallback. New thin API:
+   `Order::or_node_and_node_count_opt(usize)`.
+
+Validation against latexml-oxide on the 100-paper math-bound
+sample (top-100 by `phase_math_parse_us` in wp4 telemetry; the
+same fixture used for the prior HYBRID-no-cap measurement
+recorded in `latexml-oxide/docs/PERFORMANCE.md`):
+
+| Mode | OK / 100 | OOM aborts | Wall (n=98) | Δ vs LEGACY |
+|---|---:|---:|---:|---:|
+| LEGACY | 98 | 0 | 3188.6 s | — |
+| HYBRID, no cap (prior) | 79 | **19** | 2955.4 s on n=79 | +13.2 % on that subset |
+| **HYBRID, cap = 500 and-nodes** | **98** | **0** | **2274.3 s** | **−28.7 %** |
+
+The cap+fallback **fixes the 19 OOMs** the no-cap hybrid path
+introduced AND makes the corpus measurably faster than LEGACY
+on the same 98-paper subset: every paper's bocage either fits
+in ASF (cheap path with singleton + clone trims) or falls
+through to libmarpa Tree iteration (already-computed bocage
+shared — strictly cheaper than the LEGACY two-pass).
+
+Worst per-paper regression: +2.0 %. Only 2 of 98 papers slower
+than LEGACY at all. Largest single-paper gain: −51 %.
+
+The cap is wired with default 500 in latexml-oxide
+(`LATEXML_MARPA_HYBRID_AND_NODE_LIMIT`); set to `0` or `none`
+to disable. Treat the cap as a safety net — each formula that
+fires it is a candidate for grammar-level category tightening
+or earlier action-time pruning, not for raising the cap.
+
+### Items closed and items deferred
+
+**Closed in this branch:**
+- singleton nidset/glade cache (top item from the prior
+  next-machine list)
+- bocage-metadata-cache overhead trim (item 3)
+- source-nidset clone elimination (incremental win)
+- large-bocage Tree-iter fallback (item 2 from
+  `latexml-oxide/docs/PERFORMANCE.md`'s "Actionable next steps")
+
+**Open for follow-up:**
+- `RefCell` → `&mut self` API on bocage metadata caches —
+  still gated on a separate before/after profile against
+  ASF_ONLY=1.
+- Flat factoring storage — still **not justified** on May 18
+  counters; deferred indefinitely without new profile evidence.
+- Demand-driven `rh_value(i)` API — large change, gated on
+  evidence that semantic pruning can reject parent alternatives
+  before children construct.
+
+### Validation method actually used
+
+Per the prior request: math-heavy fixture (100 papers, top by
+`phase_math_parse_us`), release+native+cortex profile, 8
+workers, 180 s timeout, 8 GB ulimit. Both LEGACY and HYBRID
+runs are against marpa commit `5f6a19e` so the comparison
+isolates the routing / cap decision rather than any unrelated
+binary drift.

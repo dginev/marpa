@@ -101,6 +101,15 @@ impl Order {
         }
     }
 
+    pub fn or_node_and_node_count_opt(&mut self, or_node_id: usize) -> Result<Option<usize>> {
+        match unsafe { _marpa_o_or_node_and_node_count(self.internal, or_node_id as i32) } {
+            -1 => Ok(None),
+            -2 => self.grammar.error_or("error getting or-node and-node count"),
+            m if m >= 0 => Ok(Some(m as usize)),
+            e => panic!("unexpected error code: {e}"),
+        }
+    }
+
     pub fn or_node_and_node_ids(&mut self, or_node_id: usize) -> Vec<i32> {
         let mut ids = Vec::new();
         match unsafe { _marpa_o_or_node_and_node_count(self.internal, or_node_id as i32) } {
