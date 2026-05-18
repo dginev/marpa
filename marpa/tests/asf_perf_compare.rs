@@ -144,6 +144,11 @@ fn perf_compare_panda_simple() {
     "ratio (run_recognizer / ASF): {:.2}×",
     rr_ns as f64 / asf_ns.max(1) as f64
   );
+  // Correctness gate: `CountTraverser` enumerates the same Cartesian
+  // product the tree iterator unfolds, so its saturating sum must match
+  // the underlying parse-tree count. A regression in symch unification
+  // or in the post-order memoization would change `asf_count`.
+  assert_eq!(asf_count, rr_count, "ASF parse-count must equal tree-iterator count");
 }
 
 #[test]
@@ -161,6 +166,7 @@ fn perf_compare_panda_long() {
     "ratio (run_recognizer / ASF): {:.2}×",
     rr_ns as f64 / asf_ns.max(1) as f64
   );
+  assert_eq!(asf_count, rr_count, "ASF parse-count must equal tree-iterator count");
 }
 
 // Catalan-explosion arithmetic grammar: E → E op E | num
@@ -189,6 +195,8 @@ fn perf_compare_arith_explosion() {
     "ratio (run_recognizer / ASF): {:.2}×",
     rr_ns as f64 / asf_ns.max(1) as f64
   );
+  assert_eq!(rr_count, 429, "Catalan(7) = 429 distinct parses (tree iterator)");
+  assert_eq!(asf_count, 429, "ASF parse-count must match Catalan(7) = 429");
 }
 
 #[test]
@@ -206,4 +214,6 @@ fn perf_compare_arith_big_explosion() {
     "ratio (run_recognizer / ASF): {:.2}×",
     rr_ns as f64 / asf_ns.max(1) as f64
   );
+  assert_eq!(rr_count, 58786, "Catalan(11) = 58786 distinct parses (tree iterator)");
+  assert_eq!(asf_count, 58786, "ASF parse-count must match Catalan(11) = 58786");
 }
