@@ -36,7 +36,6 @@ use marpa::result::Result;
 
 use marpa::asf::{Glade, Traverser};
 
-use std::collections::HashMap;
 use std::io::Cursor;
 use std::time::Instant;
 

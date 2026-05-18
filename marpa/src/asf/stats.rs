@@ -106,8 +106,10 @@ thread_local! {
 }
 
 /// Run `f` against the thread-local stats accumulator. No-op when
-/// `MARPA_ASF_STATS` is unset — `enabled()` short-circuits.
-/// Re-entrant safe: we `take()` the cell, run `f`, put it back.
+/// `MARPA_ASF_STATS` is unset — `enabled()` short-circuits. `f` must
+/// not call `with_stats` itself: we `take()` the cell for the
+/// duration of `f`, so nested calls would see a fresh default and
+/// drop the inner bumps when control returns.
 #[inline]
 pub(crate) fn with_stats<F: FnOnce(&mut AsfStats)>(f: F) {
   if !enabled() {
@@ -166,9 +168,11 @@ mod tests {
 
   #[test]
   fn as_log_line_contains_key_counters() {
-    let mut s = AsfStats::default();
-    s.glades_visited = 42;
-    s.singleton_fast_path_hits = 17;
+    let s = AsfStats {
+      glades_visited: 42,
+      singleton_fast_path_hits: 17,
+      ..Default::default()
+    };
     let line = s.as_log_line();
     assert!(line.contains("glades=42"), "log: {line}");
     assert!(line.contains("singleton_hits=17"), "log: {line}");
@@ -176,9 +180,11 @@ mod tests {
 
   #[test]
   fn reset_zeros_all_counters() {
-    let mut s = AsfStats::default();
-    s.glades_visited = 100;
-    s.symches_built = 50;
+    let mut s = AsfStats {
+      glades_visited: 100,
+      symches_built: 50,
+      ..Default::default()
+    };
     s.reset();
     assert_eq!(s.glades_visited, 0);
     assert_eq!(s.symches_built, 0);

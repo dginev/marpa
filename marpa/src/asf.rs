@@ -5,7 +5,7 @@ mod stats;
 use std::collections::HashMap;
 
 use crate::result::Result;
-use crate::thin::{Bocage, Order, Recognizer};
+use crate::thin::{Bocage, Recognizer};
 
 pub use self::glade::*;
 pub use self::nidset::*;
@@ -81,30 +81,25 @@ struct AndNodeInfo {
   symbol: Option<i32>,
 }
 
-/// Per-or-node bocage metadata. The `(irl_id → xrl_id → lhs_id)`
-/// chain crosses FFI three times and the values are stable for
-/// the lifetime of the bocage. Cache them per-or-node.
-///
-/// `irl_id` is computed alongside `xrl_id` and `lhs_id` (the
-/// libmarpa traversal goes irl → xrl → lhs) but no current
-/// consumer reads it; kept on the struct to document the
-/// derivation chain and to avoid re-deriving if a future caller
-/// needs it.
+/// Per-or-node bocage metadata. Caches the result of the FFI chain
+/// `or_node_irl → source_xrl → rule_lhs`, which is stable for the
+/// lifetime of the bocage. Only `xrl_id` and `lhs_id` are read
+/// downstream; the intermediate `irl_id` lives as a local variable
+/// during cache population.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
 struct OrNodeInfo {
-  irl_id: i32,
   xrl_id: i32,
   lhs_id: i32,
 }
 
-// `Powerset` and `or_nodes` are scaffolding for the in-progress
-// ASF traversal port; keep the fields populated so the eventual
-// glade-traversal port can read them, but tell rustc not to warn yet.
-#[allow(dead_code)]
+/// Per-symch ceiling on enumerated factorings. Matches Perl
+/// `Marpa::R2::ASF`'s default; the parameter exists in Perl as a
+/// configurable knob, but no Rust caller has needed to tune it,
+/// so it's a constant here.
+const FACTORING_MAX: usize = 42;
+
 pub struct ASF {
   next_inset_id: usize,
-  factoring_max: usize,
   /// Indexed by glade id (sequential, dense). `None` slots are
   /// holes — register_glade/get widen the Vec as needed.
   nidset_by_id: Vec<Option<Nidset>>,
@@ -120,7 +115,6 @@ pub struct ASF {
   or_node_cache: std::cell::RefCell<Vec<Option<OrNodeInfo>>>,
   recce: Recognizer,
   bocage: Bocage,
-  ordering: Order,
 }
 
 /// Get a mutable ref to the slot at `idx`, growing as needed and
@@ -177,11 +171,9 @@ impl ASF {
   /// the ASF. Passing the bocage through avoids constructing it twice.
   pub fn from_parts(recce: Recognizer, bocage: Bocage) -> Result<Self> {
     with_stats(|s| s.asf_news += 1);
-    let mut ordering = bocage.get_ordering().expect(
-      "An attempt was make to create an ASF for a null parse\n
-          A null parse is a successful parse of a zero-length string\n
-          ASF's are not defined for null parses",
-    );
+    let mut ordering = bocage
+      .get_ordering()
+      .ok_or("ASF cannot be created for a null parse (zero-length input)")?;
     let mut or_nodes = Vec::new();
     let mut or_node_id = 0;
     loop {
@@ -189,13 +181,10 @@ impl ASF {
       if and_node_ids.is_empty() {
         break;
       }
-      or_nodes.insert(
-        or_node_id,
-        Nidset {
-          id: or_node_id,
-          nids: and_node_ids,
-        },
-      );
+      or_nodes.push(Nidset {
+        id: or_node_id,
+        nids: and_node_ids,
+      });
       or_node_id += 1;
     }
 
@@ -205,7 +194,6 @@ impl ASF {
       nidset_by_id: Vec::new(),
       glades: Vec::new(),
       intset_by_key: HashMap::new(),
-      factoring_max: 42,
       or_nodes,
       // OR-node id range is bounded by `or_nodes.len()` (we enumerated
       // them upfront). Pre-size to avoid growth in the hot path.
@@ -214,7 +202,6 @@ impl ASF {
       or_node_cache: std::cell::RefCell::new(vec![None; or_node_count]),
       recce,
       bocage,
-      ordering,
     })
   }
 
@@ -308,8 +295,6 @@ impl ASF {
     // handled at function entry via `visit_state[glade_id]` —
     // setting it to `Visiting` above already shields recursion
     // from cousin-pointer cycles.
-
-    // Recurse into each child (post-order).
     for child_id in child_ids {
       if matches!(cache.get(child_id), Some(Some(_))) {
         continue;
@@ -370,16 +355,19 @@ impl ASF {
   }
 
   fn obtain_glade(&mut self, glade_id: usize) -> Result<&mut Glade> {
-    let glade = self.glades.get(glade_id).and_then(|o| o.as_ref())
-      .expect("Attempt to use an invalid glade");
+    let glade = self
+      .glades
+      .get(glade_id)
+      .and_then(Option::as_ref)
+      .ok_or_else(|| format!("attempt to use an invalid glade with ID: {glade_id}"))?;
     if !glade.registered {
-      panic!("attempt to use an unregistered glade with ID: {glade_id}");
+      return Err(format!("attempt to use an unregistered glade with ID: {glade_id}").into());
     }
     // Return the glade if it is already set up
-    if !glade.symches.is_empty() {
-      Ok(self.glades.get_mut(glade_id).and_then(|o| o.as_mut()).unwrap())
-    } else {
+    if glade.symches.is_empty() {
       self.compute_symches(glade_id)
+    } else {
+      Ok(self.glades[glade_id].as_mut().expect("glade exists per the get() above"))
     }
   }
 
@@ -391,8 +379,8 @@ impl ASF {
     let source_nids: Vec<i32> = self
       .nidset_by_id
       .get(glade_id)
-      .and_then(|o| o.as_ref())
-      .unwrap_or_else(|| panic!("No nidset registered for glade ID {glade_id}"))
+      .and_then(Option::as_ref)
+      .ok_or_else(|| format!("no nidset registered for glade ID {glade_id}"))?
       .nids
       .clone();
     with_stats(|s| {
@@ -412,10 +400,9 @@ impl ASF {
     // --- Phase 2: for each contiguous run of source_data sharing
     // the same sort_ix, build one symch. Within a symch, every
     // source nid contributes its full set of factorings.
-    let factoring_max = self.factoring_max;
     let mut symches: Vec<Symch> = Vec::new();
     let mut group_start = 0usize;
-    let is_token_glade = source_data.first().map(|(_, n)| *n < 0).unwrap_or(false);
+    let is_token_glade = source_data.first().is_some_and(|(_, n)| *n < 0);
 
     while group_start < source_data.len() {
       let current_sort_ix = source_data[group_start].0;
@@ -461,12 +448,12 @@ impl ASF {
         with_stats(|s| s.general_factoring_fallback += 1);
         let mut raw_factorings: Vec<Vec<Vec<i32>>> = Vec::new();
         for &nid in &group_nids {
-          if raw_factorings.len() >= factoring_max {
+          if raw_factorings.len() >= FACTORING_MAX {
             omitted = true;
             break;
           }
           let mut work_stack: Vec<Vec<i32>> = Vec::new();
-          self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, factoring_max, &mut omitted)?;
+          self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, &mut omitted)?;
           if omitted {
             break;
           }
@@ -511,8 +498,11 @@ impl ASF {
     // glade share the same LHS symbol (or the same token id).
     let symbol_id = self.nid_symbol_id(source_data[0].1)?;
 
-    let glade = self.glades.get_mut(glade_id).and_then(|o| o.as_mut())
-      .expect("Attempt to use an invalid glade");
+    let glade = self
+      .glades
+      .get_mut(glade_id)
+      .and_then(Option::as_mut)
+      .ok_or_else(|| format!("attempt to use an invalid glade with ID: {glade_id}"))?;
     glade.symches = symches;
     glade.id = glade_id;
     glade.symbol_id = symbol_id;
@@ -548,18 +538,17 @@ impl ASF {
       };
       child_nids.push(cause_nid);
 
-      match info.predecessor {
-        Some(pred) => or_node_id = pred,
-        None => {
-          child_nids.reverse();
-          let mut child_glade_ids = Vec::with_capacity(child_nids.len());
-          for cause_nid in child_nids {
-            let child_glade_id = self.obtain_nidset_id(vec![cause_nid]);
-            self.register_glade(child_glade_id);
-            child_glade_ids.push(child_glade_id);
-          }
-          return Ok(Some(child_glade_ids));
-        },
+      if let Some(pred) = info.predecessor {
+        or_node_id = pred;
+      } else {
+        child_nids.reverse();
+        let mut child_glade_ids = Vec::with_capacity(child_nids.len());
+        for cause_nid in child_nids {
+          let child_glade_id = self.obtain_nidset_id(vec![cause_nid]);
+          self.register_glade(child_glade_id);
+          child_glade_ids.push(child_glade_id);
+        }
+        return Ok(Some(child_glade_ids));
       }
     }
   }
@@ -573,16 +562,15 @@ impl ASF {
   ///
   /// `work_stack` accumulates positions rightmost-first; on each
   /// leaf (no predecessor) the stack is reversed and pushed into
-  /// `out`. `omitted` short-circuits once `factoring_max` is hit.
+  /// `out`. `omitted` short-circuits once `FACTORING_MAX` is hit.
   fn collect_factorings(
     &self,
     or_node_id: i32,
     work_stack: &mut Vec<Vec<i32>>,
     out: &mut Vec<Vec<Vec<i32>>>,
-    factoring_max: usize,
     omitted: &mut bool,
   ) -> Result<()> {
-    if *omitted || out.len() >= factoring_max {
+    if *omitted || out.len() >= FACTORING_MAX {
       *omitted = true;
       return Ok(());
     }
@@ -637,7 +625,7 @@ impl ASF {
     }
 
     for (pred, cause_nids) in groups {
-      if out.len() >= factoring_max {
+      if out.len() >= FACTORING_MAX {
         *omitted = true;
         return Ok(());
       }
@@ -649,7 +637,7 @@ impl ASF {
           out.push(factoring);
         }
         Some(pred_or) => {
-          self.collect_factorings(pred_or, work_stack, out, factoring_max, omitted)?;
+          self.collect_factorings(pred_or, work_stack, out, omitted)?;
         }
       }
       work_stack.pop();
@@ -720,7 +708,7 @@ impl ASF {
     let grammar = self.recce.grammar();
     let xrl_id = grammar.source_xrl(irl_id)?;
     let lhs_id = grammar.rule_lhs(xrl_id)?;
-    let info = OrNodeInfo { irl_id, xrl_id, lhs_id };
+    let info = OrNodeInfo { xrl_id, lhs_id };
     let mut cache = self.or_node_cache.borrow_mut();
     if cache.len() <= id {
       cache.resize(id + 1, None);

@@ -99,10 +99,7 @@ impl Glade {
   /// Returns `-1` for a token glade.
   pub fn rule_id(&self) -> i32 {
     let (symch_ix, _) = self.cursor;
-    self
-      .symches
-      .get(symch_ix)
-      .map_or(-1, |s| s.rule_id)
+    self.symches.get(symch_ix).map_or(-1, |s| s.rule_id)
   }
 
   /// All symches exposed by this glade. Each entry carries a
@@ -115,21 +112,13 @@ impl Glade {
   /// factoring. The cursor is initialized to symch 0 / factoring 0.
   pub fn is_factored(&self) -> bool {
     let (symch_ix, _) = self.cursor;
-    self
-      .symches
-      .get(symch_ix)
-      .map(|s| s.factorings.len() > 1)
-      .unwrap_or(false)
+    self.symches.get(symch_ix).is_some_and(|s| s.factorings.len() > 1)
   }
 
   /// How many factorings the currently-selected symch has.
   pub fn factor_count(&self) -> usize {
     let (symch_ix, _) = self.cursor;
-    self
-      .symches
-      .get(symch_ix)
-      .map(|s| s.factorings.len())
-      .unwrap_or(0)
+    self.symches.get(symch_ix).map_or(0, |s| s.factorings.len())
   }
 
   /// Number of RHS positions in the **currently selected**
@@ -141,8 +130,7 @@ impl Glade {
       .symches
       .get(symch_ix)
       .and_then(|s| s.factorings.get(fact_ix))
-      .map(|f| f.len())
-      .unwrap_or(0)
+      .map_or(0, Vec::len)
   }
 
   /// Glade id at RHS position `ix` of the current factoring.
