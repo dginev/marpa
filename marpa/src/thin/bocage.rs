@@ -79,8 +79,11 @@ impl Bocage {
     }
 
     pub fn or_node_irl(&self, node_id: i32) -> Result<i32> {
+        // libmarpa convention: IRL ids are 0-indexed (the first internal
+        // rule is IRL 0, which is valid). `-1` is the "no more" sentinel,
+        // `-2` is a real error. Treat anything `>= 0` as success.
         match unsafe { _marpa_b_or_node_irl(self.internal, node_id) } {
-            i if i > 0 => Ok(i),
+            i if i >= 0 => Ok(i),
             code => Err(format!("failed to get or node irl in Bocage: {code}").into()),
         }
     }
