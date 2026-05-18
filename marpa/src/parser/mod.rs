@@ -51,6 +51,14 @@ pub struct Parser {
 pub enum HybridParseResult<PT, PS> {
     Unambiguous(Tree),
     Ambiguous(PT, PS),
+    AmbiguousTree(Tree, BocageStats),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BocageStats {
+    pub or_node_count: usize,
+    pub and_node_count: usize,
+    pub max_and_nodes_per_or_node: usize,
 }
 
 impl Default for Parser {
@@ -87,10 +95,7 @@ impl Parser {
     /// intentionally cache a precomputed grammar and need a fresh
     /// recognizer without running `Grammar::precompute()` again.
     pub fn with_precomputed_grammar(grammar: Grammar) -> Self {
-        Parser {
-            state: GReady,
-            grammar,
-        }
+        Parser { state: GReady, grammar }
     }
 
     fn adv_marpa(&mut self) -> Result<()> {
@@ -212,6 +217,30 @@ impl Parser {
         TR: Traverser,
         TR::ParseTree: Clone,
     {
+        self.parse_hybrid_with_and_node_limit(tokens, init_state, traverser, None)
+    }
+
+    /// Like `parse_hybrid`, but ambiguous bocages whose total
+    /// and-node count exceeds `max_and_nodes` are routed back to the
+    /// ordinary `Tree` iterator instead of constructing the ASF.
+    ///
+    /// This is a pressure valve for high-cardinality ambiguous
+    /// forests: `Tree` iteration streams alternatives and lets the
+    /// caller's existing caps stop early, while ASF construction must
+    /// allocate the Rust-side glade/factoring view up front.
+    pub fn parse_hybrid_with_and_node_limit<T, U, TR>(
+        &mut self,
+        tokens: T,
+        init_state: TR::ParseState,
+        traverser: &mut TR,
+        max_and_nodes: Option<usize>,
+    ) -> Result<HybridParseResult<TR::ParseTree, TR::ParseState>>
+    where
+        T: TokenSource<U>,
+        U: Token,
+        TR: Traverser,
+        TR::ParseTree: Clone,
+    {
         self.read(tokens)?;
         if let R(recce) = mem::replace(&mut self.state, GReady) {
             let bocage = Bocage::new(&recce)?;
@@ -221,6 +250,15 @@ impl Parser {
                 self.state = T(tree.clone());
                 Ok(HybridParseResult::Unambiguous(tree))
             } else {
+                if let Some(max_and_nodes) = max_and_nodes {
+                    let mut order = Order::new(&bocage)?;
+                    let stats = bocage_stats(&mut order)?;
+                    if stats.and_node_count > max_and_nodes {
+                        let tree = Tree::new(order)?;
+                        self.state = T(tree.clone());
+                        return Ok(HybridParseResult::AmbiguousTree(tree, stats));
+                    }
+                }
                 let mut asf = ASF::from_parts(recce, bocage)?;
                 let (output, state) = asf.traverse(init_state, traverser)?;
                 Ok(HybridParseResult::Ambiguous(output, state))
@@ -255,4 +293,17 @@ impl Parser {
         self.state = GReady;
         Ok(metric)
     }
+}
+
+fn bocage_stats(order: &mut Order) -> Result<BocageStats> {
+    let mut stats = BocageStats::default();
+    loop {
+        let Some(and_node_count) = order.or_node_and_node_count_opt(stats.or_node_count)? else {
+            break;
+        };
+        stats.and_node_count += and_node_count;
+        stats.max_and_nodes_per_or_node = stats.max_and_nodes_per_or_node.max(and_node_count);
+        stats.or_node_count += 1;
+    }
+    Ok(stats)
 }

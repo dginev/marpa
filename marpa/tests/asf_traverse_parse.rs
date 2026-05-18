@@ -71,6 +71,7 @@ fn hybrid_parse_returns_tree_for_unambiguous_input() {
       assert_eq!(tree.count(), 1, "unambiguous branch should return the single Tree iterator");
     },
     HybridParseResult::Ambiguous(_, _) => panic!("unambiguous grammar should not traverse ASF"),
+    HybridParseResult::AmbiguousTree(_, _) => panic!("unambiguous grammar should not route through ambiguous fallback"),
   }
 }
 
@@ -84,11 +85,31 @@ fn hybrid_parse_traverses_asf_for_ambiguous_input() {
     .expect("hybrid parse should succeed")
   {
     HybridParseResult::Unambiguous(_) => panic!("panda grammar should route to ASF"),
+    HybridParseResult::AmbiguousTree(_, _) => panic!("panda grammar should stay below the fallback limit"),
     HybridParseResult::Ambiguous(alts, ()) => {
       let mut unique = alts;
       unique.sort();
       unique.dedup();
       assert_eq!(unique.len(), 3, "ambiguous branch should expose the three panda parses");
+    },
+  }
+}
+
+#[test]
+fn hybrid_parse_can_fallback_to_tree_for_large_ambiguous_bocage() {
+  let (mut parser, _b, rule_names) = build_grammar().expect("grammar build should succeed");
+  let mut traverser = ExhaustiveTraverser { rule_names };
+
+  match parser
+    .parse_hybrid_with_and_node_limit(ByteScanner::new(Cursor::new(PANDA_INPUT)), (), &mut traverser, Some(0))
+    .expect("hybrid parse should succeed")
+  {
+    HybridParseResult::Unambiguous(_) => panic!("panda grammar should be ambiguous"),
+    HybridParseResult::Ambiguous(_, _) => panic!("zero limit should force tree fallback"),
+    HybridParseResult::AmbiguousTree(tree, stats) => {
+      assert!(stats.or_node_count > 0);
+      assert!(stats.and_node_count > 0);
+      assert_eq!(tree.count(), 3, "fallback tree should expose the three panda parses");
     },
   }
 }
