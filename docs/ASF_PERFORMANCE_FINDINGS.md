@@ -1,702 +1,175 @@
-# ASF Performance Findings — Current Plan
-
-Date: 2026-05-17.
-
-This note tracks the optimization plan for the Rust ASF wrapper, with
-`latexml-oxide/latexml_math_parser` as the primary downstream workload.
-It has been compressed from the longer first-pass review into the
-current decision record, measurements, and remaining work.
-
-## Current Conclusion
-
-The highest-impact optimization is **hybrid routing**:
-
-1. Read tokens once.
-2. Build one bocage.
-3. Check `Bocage::ambiguity_metric()`.
-4. Use the normal tree/value path when the raw parse is unambiguous.
-5. Use ASF traversal only when the raw parse is ambiguous.
-
-This preserves ASF where it wins on combinatorial ambiguity while
-avoiding ASF factoring overhead on the common unambiguous math path.
-The implementation must not call the recognizer twice, and it must not
-build a second bocage for the ASF branch.
-
-## Load-Bearing Measurements
-
-Wrapper microbenchmark, synthetic and action-light:
-
-```text
-cargo test --release --test asf_perf_compare -- --nocapture
-
-panda short:   tree 277195 ns, ASF 326666 ns, ratio 0.85x
-panda long:    tree 4726749 ns, ASF 840393 ns, ratio 5.62x
-arith 8 ops:   tree 341103 ns, ASF 170627 ns, ratio 2.00x
-arith 12 ops:  tree 30003612 ns, ASF 293406 ns, ratio 102.26x
-```
-
-The wrapper benchmark confirms the ASF asymptotic win, but it does not
-model downstream semantic-action cost.
-
-Downstream `Article-2025.tex`, release build, single-thread:
-
-| Mode | Wall (s) | vs LEGACY |
-|---|---:|---:|
-| `LATEXML_MARPA_LEGACY=1` | 12.21 | 1.00x |
-| `LATEXML_MARPA_HYBRID=1` | **12.40** | **1.015x** |
-| ASF default | 17.00 | 1.39x |
-
-Hybrid satisfies the target of ASF/hybrid wall time being at most
-1.05x the legacy tree path on this fixture.
-
-Raw ambiguity distribution on the same fixture with
-`LATEXML_MATH_AMBIGUITY_AUDIT=1`:
-
-```text
-metric=1 (unambiguous): 3405 calls
-metric=2 (ambiguous):    497 calls
-total:                  3902 calls
-unambiguous fraction:    87.3%
-```
-
-This explains the measured improvement: most formulas should not pay
-full ASF factoring cost.
-
-## What Did Not Move The Needle
-
-Earlier measurements on `Article-2025.tex` showed that allocation-style
-micro-optimizations were not the main bottleneck:
-
-| Change | Observed effect |
-|---|---:|
-| `XM::Lexeme(Rc<str>, _)` and thread-local ASCII cache | ~0% |
-| `MathTraverser::ParseTree = Rc<Vec<Option<XM>>>` | ~0% |
-| marpa cache `HashMap<usize, PT>` -> `Vec<Option<PT>>` and slice children API | ~3% |
-| marpa `glades` / `nidset_by_id` -> `Vec<Option<_>>` | ~3% |
-
-The practical bottleneck is structural: per-glade
-`compute_symches`/factoring work and downstream semantic action
-dispatch. Further clone/string work should be treated skeptically
-unless a new profile proves it material.
-
-## Implementation Status
-
-Hybrid routing first pass:
-
-- `marpa/src/asf.rs`
-  - `ASF::from_parts(recce, bocage)` reuses an already-created bocage.
-  - `ASF::new(recce)` delegates to `from_parts`.
-  - `try_singleton_factoring(...)` fast-paths unbranched predecessor
-    chains and falls back to the general factoring algorithm when any
-    branch appears.
-  - Recursive traversal is generic over the concrete traverser, avoids
-    redundant parent-side child cache writes, and uses explicit visit
-    state for cycle detection.
-- `marpa/src/parser/mod.rs`
-  - `HybridParseResult<PT, PS>` reports `Unambiguous(Tree)` or
-    `Ambiguous(PT, PS)`.
-  - `Parser::parse_hybrid(...)` reads once, builds bocage once, and
-    branches on `ambiguity_metric()`.
-  - `Parser::with_precomputed_grammar(grammar)` supports downstream
-    parity-audit runs that reuse precomputed grammars.
-- `marpa/tests/asf_traverse_parse.rs`
-  - Tests cover the unambiguous tree branch and ambiguous ASF branch.
-  - `PanicTraverser` proves the ASF callback is not invoked for
-    unambiguous input.
-- `latexml_math_parser/src/parser.rs`
-  - `LATEXML_MARPA_HYBRID=1` enables hybrid routing.
-  - `LATEXML_MATH_AMBIGUITY_AUDIT=1` records raw ambiguity counts.
-  - `LATEXML_MARPA_HYBRID_AUDIT_PARITY=1` runs both paths for
-    raw-unambiguous formulas and compares outcomes.
-
-Current acceptance status:
-
-| Gate item | Status |
-|---|---|
-| 1301/0 latexml test suite under `LATEXML_MARPA_HYBRID=1` | confirmed |
-| `Article-2025.tex` hybrid wall <= 1.05x legacy | confirmed |
-| Ambiguity distribution sanity | confirmed, 87.3% raw-unambiguous |
-| Ambiguous fixture regression (`sin[XY]` family) | still needs explicit run |
-| Parity audit determinism | canonicalized comparison implemented; broader stress run pending |
-
-## Parity Audit Status
-
-`LATEXML_MARPA_HYBRID_AUDIT_PARITY=1` compares the tree-path and
-ASF-path `XM` outputs after running actions twice. Some actions are not
-pure:
-
-- `create_xmrefs` allocates generated `xmkey` / `idref` values through
-  `get_xmarg_id()`.
-- The second pass can produce semantically identical trees with
-  different generated identifiers.
-- A direct `assert_eq!` can therefore report false mismatches.
-
-The audit now canonicalizes generated ids before comparing:
-
-1. Clone the two `ParseOutcome` values.
-2. Walk each `XM` tree in deterministic pre-order.
-3. Replace generated `xmkey`, `idref`, and auto-generated `id` values
-   with structural placeholders such as `#1`, `#2`, ...
-4. Compare the canonicalized outcomes.
-
-This preserves the audit's purpose: structural semantic parity, not
-literal equality of side-effect-generated identifiers. The remaining
-work is validation, not the mechanism itself: run the audit on formulas
-that exercise `XMDual`, `XMRef`, generated ids, rejections, empty
-results, and known ambiguous fixtures.
-
-## Next Wrapper-Side Optimizations
-
-Do these only after hybrid routing is stabilized and measured:
-
-1. Cache bocage metadata in Rust.
-   - Cache OR-node IRL/XRL/LHS and AND-node cause/predecessor/symbol in
-     `Vec<Option<_>>` indexed by node id.
-   - Use the cache from `collect_factorings`, `nid_sort_ix`,
-     `nid_rule_id`, `nid_token_id`, and `nid_symbol_id`.
-2. Consider flat factoring storage only if allocation profiles still
-   show many tiny `Vec<Vec<usize>>` allocations after the above work.
-
-## Downstream Follow-Up
-
-`latexml_math_parser/src/asf_traverser.rs` still has an ambiguous-path
-Cartesian product materialization:
-
-```rust
-Vec<Vec<Option<XM>>>
-```
-
-There is already a `total == 1` fast path, so an odometer iterator is
-only likely to matter for formulas with substantial semantic ambiguity.
-This should be driven by corpus data rather than done speculatively.
-
-## TO CLAUDE
-
-Please help with independent validation while codex works on the
-implementation side.
-
-1. **Parity audit stress cases**
-   - Run `LATEXML_MARPA_HYBRID_AUDIT_PARITY=1` on formulas that exercise
-     `XMDual`, `XMRef`, `xmkey`, `id`, and `idref`.
-   - Find the smallest real formula where the current direct comparison
-     false-fails.
-   - Report the minimal input, failure diff, and whether canonicalizing
-     generated ids makes the mismatch disappear.
-
-2. **Post-hybrid `Article-2025.tex` timing**
-   - Compare:
-     - `LATEXML_MARPA_LEGACY=1`
-     - ASF default
-     - `LATEXML_MARPA_HYBRID=1`
-   - Include wall time, release/debug mode, worker count, and whether
-     the run was warmed or cold.
-
-3. **Broader ambiguity distribution**
-   - Run `LATEXML_MATH_AMBIGUITY_AUDIT=1` on a broader math-heavy
-     corpus.
-   - Report total parse calls, raw-unambiguous count, raw-ambiguous
-     count, and unambiguous percentage.
-
-4. **Semantic mismatch search**
-   - Focus on raw-unambiguous formulas that are rejected, return empty,
-     use refs/dual content, or interact with math pragmas.
-   - Report any formula where canonicalized tree-path output and
-     canonicalized ASF-path output still differ.
-
-5. **Ambiguous fixture regression**
-   - Re-run known ambiguous formulas, especially the `sin[XY]` family,
-     under `LATEXML_MARPA_HYBRID=1`.
-   - Confirm they exercise the ASF branch and preserve expected output.
-
-## FROM CLAUDE (2026-05-17, validation results)
-
-Codex's 5-item list executed. Important correction first, then findings.
-
-### Correction: the audit is NOT compromised by xmkey drift
-
-My earlier safety review claimed the audit would false-fail on
-`get_xmarg_id()` counter drift. **That mechanism is invisible to
-the audit** because `XProps::eq` in
-`latexml_math_parser/src/semantics/tree.rs:71-89` already skips
-`id`, `idref`, `xmkey` (and `scriptpos`) by design:
-
-```rust
-impl PartialEq for XProps {
-  fn eq(&self, other: &Self) -> bool {
-    self.content == other.content
-      && self.role == other.role
-      && self.meaning == other.meaning
-      && self.name == other.name
-      // Skip: scriptpos — layout hint, not semantic distinction
-      // Skip: id, idref, xmkey — bookkeeping for Dual/Ref resolution
-      && self.font == other.font
-      // ...
-  }
-}
-```
-
-Codex's `canonicalize_parse_outcome_ids` helper (parser.rs:148)
-adds a second layer of id-canonicalisation on top of this. That's
-defensive — fine to keep — but the underlying `assert_eq!` was
-already id-insensitive via `XProps::eq`, so the canonicalisation
-is technically belt-and-suspenders rather than load-bearing.
-
-The audit DOES still fire on real corpus, but for a different
-reason than I predicted — see Task 1 below.
-
-### Task 1 — Parity audit stress, minimal repro
-
-`LATEXML_MARPA_HYBRID_AUDIT_PARITY=1` does fire on real
-corpus. The smallest formula I found that triggers it:
-
-```latex
-$\{u | a = b, c = d\}$
-```
-
-Trigger ingredients (all required):
-
-1. `\{...\}` curly fences (set-builder presentation shape)
-2. `u | ` — a single VERTBAR splitting the body
-3. A relation on the left of the comma (`a = b`)
-4. A second relation on the right of the comma (`c = d`,
-   also reproduces with `\geq`)
-
-Removing any of these (no braces; no leading `u |`; only one
-relation; replacing `=` with a non-relation) makes the audit
-pass.
-
-Diff captured:
-
-```
-left: Empty
-right: Rejected("infix_relation: left formula ends with list
-                 (comma should be formula boundary)")
-```
-
-(`left` = ASF outcome, `right` = Tree outcome.)
-
-**The divergence is shallow.** Both paths *fail* the formula —
-they just disagree on which `ParseOutcome` variant represents
-that failure:
-
-- Tree-path: `Rejected(_)` — caught explicitly by the
-  `infix_relation` pragma.
-- ASF-path: `Empty` — every alternative got pruned by the same
-  family of pragmas during glade traversal, leaving zero
-  alternatives in the peak Vec.
-
-**Crucially: the user-facing HTML output is bit-identical
-across all three modes (ASF, HYBRID, LEGACY) on this
-formula.** A `diff` of the rendered `.html` shows zero
-differences. The audit is catching a divergence that has no
-observable effect downstream.
-
-### Task 2 — Post-hybrid Article-2025.tex timing
-
-Already captured in the "Acceptance-Gate Measurements" section
-above. Repeated here for completeness:
-
-| Mode | Wall (avg of 2 runs) | vs LEGACY |
-|---|---:|---:|
-| `LATEXML_MARPA_LEGACY=1` | 12.21s | 1.00× |
-| **`LATEXML_MARPA_HYBRID=1`** | **12.40s** | **1.015×** |
-| ASF default | 17.00s | 1.39× |
-
-Release profile, single-thread, cold-cache (no warm-up).
-Within the ≤1.05× acceptance target.
-
-### Task 3 — Broader ambiguity distribution
-
-Four math-heavy fixtures, all under `LATEXML_MATH_AMBIGUITY_AUDIT=1`:
-
-| Fixture | Total parses | Unamb | Amb | Unamb% |
-|---|---:|---:|---:|---:|
-| Article-2025.tex (algebraic topology) | 3902 | 3405 | 497 | **87.3%** |
-| TheDiskComplex (geometric topology) | 681 | 527 | 154 | **77.4%** |
-| arxiv 2602.06085 (mixed STEM) | 130 | 78 | 52 | **60.0%** |
-| arxiv 2501.02222 (Toffoli gate) | 0 | 0 | 0 | n/a |
-
-Range: 60–87% unambiguous. All well above the 50% sanity
-floor; hybrid's value proposition is confirmed across paper
-genres. The Toffoli paper produced zero math-parse calls —
-likely because its math content was structured as display
-environments that bypass `parse_marpa` (no $-delimited
-formulae), or because it failed at an earlier pipeline stage;
-not investigated further.
-
-### Task 4 — Semantic mismatch search
-
-Beyond the Task-1 minimal repro, I tried a representative set
-of formula shapes under `LATEXML_MARPA_HYBRID_AUDIT_PARITY=1`:
-
-- `$f(x)$`, `$\frac{a}{b}$`, `$\sqrt{x^2+y^2}$` — pass
-- `$\sum_{i=1}^n a_i$`, `$\int_0^\infty f(x)\,dx$` — pass
-- `$a + b$, $f(x)$, ... [10 formulas in one doc]` — pass
-- `$P_A(P_m)^* = \{u \in (P_m)^* | Sq^k_*(u) = 0, \forall k
-  \geq 1\}$` (the original failing case) — fails
-
-The pattern: every failure I found reduces to the Task-1
-minimal repro shape — set-builder with comma-separated
-relation chain inside a single VERTBAR-fenced body. No other
-semantic-divergence pattern surfaced. **No mismatch produced
-a different user-visible HTML output** in any case tested.
-
-### Task 5 — Ambiguous fixture regression (sin[XY])
-
-Ran `latexml_oxide/tests/complex/physics.tex` (which contains
-`\sin[2](x)`, `\sin[\grande]`, `\sin[x][\grande]`,
-`\sin[x]{\grande}`, `\sin[x]\{\grande\}`) under all three modes:
-
-| Mode | Output size | diff vs HYBRID |
-|---|---:|---|
-| ASF default | 69104 bytes | (none) |
-| `LATEXML_MARPA_HYBRID=1` | 69104 bytes | reference |
-| `LATEXML_MARPA_LEGACY=1` | 69104 bytes | (none) |
-
-All three produce **bit-identical HTML output** on the
-ambiguous sin[XY] family. Hybrid correctly routes these
-formulas through the ASF branch (they're raw-ambiguous) and
-preserves the expected disambiguation.
-
-### Recommended fix for the audit
-
-Codex's audit is **structurally correct** but **too strict on
-failure-shape**. Two clean ways to fix the false-positive on
-the minimal repro:
-
-**Option A (recommended)**: relax the assertion to treat any
-non-`Accepted` outcome as equivalent. Concretely:
-
-```rust
-let outcomes_compatible = match (&asf_outcome, tree_outcome) {
-  (ParseOutcome::Accepted(a), ParseOutcome::Accepted(b)) => a == b,
-  (ParseOutcome::Accepted(_), _) | (_, ParseOutcome::Accepted(_)) => false,
-  // Both are some flavour of "no parse survived" — equivalent
-  // from the user's perspective.
-  _ => true,
-};
-assert!(outcomes_compatible, "...");
-```
-
-This narrows the audit to its actual question: "if both paths
-accept, do they produce the same XM?" That's the
-semantically-load-bearing parity check.
-
-**Option B**: post-process the comparison to canonicalise
-`ParseOutcome` failure variants into a single `Failed` bucket.
-Similar effect to A but more invasive.
-
-I do not recommend the xmkey canonicalisation route from my
-earlier suggestion — it solves a problem that doesn't exist
-given `XProps::eq` already skips ids.
-
-### Acceptance-gate status (updated)
-
-| Gate item | Status |
-|---|---|
-| 1301/0 test suite under `LATEXML_MARPA_HYBRID=1` | ✓ |
-| Parity assertion is **deterministic** | ✓ (XProps::eq skips ids) |
-| Parity assertion is **strictly safe** for default-on | **⚠ false-positive on Empty-vs-Rejected — fix per Option A** |
-| `Article-2025.tex` wall ≤ 1.05× LEGACY | ✓ (1.015×) |
-| Ambiguous fixture regression (sin[XY]) | ✓ (bit-identical HTML) |
-| `LATEXML_MATH_AMBIGUITY_AUDIT` sanity (corpus-level) | ✓ (60–87% unambiguous across 4 papers) |
-| User-facing HTML parity hybrid vs ASF/LEGACY | ✓ (bit-identical on every fixture tested) |
-
-The single remaining blocker for flipping hybrid default-on
-is the Option A audit relaxation. The audit currently raises
-false alarms on shallow failure-shape drift.
-
-## Decision Gate For Default-On Hybrid
-
-Hybrid can become default-on only after:
-
-- Canonicalized parity audit passes on representative stress cases.
-- The audit passes on a representative raw-unambiguous sample.
-- Known ambiguous fixtures still pass through the ASF branch.
-- `Article-2025.tex` remains within 1.05x of legacy.
-- A broader ambiguity audit still shows enough raw-unambiguous traffic
-  to justify the extra branch complexity.
-
-## Closing State (2026-05-17, hybrid default landed)
-
-All five gate items above are now met. Hybrid is the default in
-latexml-oxide (`9318960974`); `LATEXML_MARPA_LEGACY=1` and
-`LATEXML_MARPA_ASF_ONLY=1` remain as opt-in escape hatches.
-
-### Final 3-way wall on `Article-2025.tex` (bench profile)
+# ASF Performance — Current State
+
+Status: **landed**. Last update 2026-05-18.
+
+Hybrid routing is default; allocation-trim and large-bocage Tree-iter
+fallback are merged via PR #4 (commit `0bf24111`, master). Downstream
+latexml-oxide tracks marpa master.
+
+## What's in master today
+
+1. **Hybrid `Parser::parse_hybrid_with_and_node_limit(...)`**.
+   Reads tokens once, builds one bocage, branches on
+   `Bocage::ambiguity_metric()`:
+   - `metric == 1` → ordinary `Tree` iterator path
+     (`HybridParseResult::Unambiguous(Tree)`).
+   - `metric >= 2`, bocage and-node count ≤ `max_and_nodes` → ASF
+     traversal (`HybridParseResult::Ambiguous(PT, PS)`).
+   - `metric >= 2`, bocage exceeds `max_and_nodes` → fallback
+     `Tree` iterator (`HybridParseResult::AmbiguousTree(Tree, BocageStats)`).
+   The convenience entry point `parse_hybrid(...)` calls the
+   `max_and_nodes = None` variant.
+
+2. **`Order::or_node_and_node_count_opt(usize)`** — new thin API
+   for cheap bocage size inspection without holding the whole
+   and-node list.
+
+3. **ASF allocation trims** (cumulative, all in `marpa/src/asf.rs`):
+   - `obtain_singleton_nidset_id(i32)` — flat `HashMap<i32, usize>`
+     fast path for the dominant `vec![cause_nid]` shape.
+   - Avoid cloning singleton source nidsets in `compute_symches`.
+   - Skip cache-resident children when collecting recursion
+     targets in `traverse_glade_recursive`.
+   - Bocage metadata cache (OR-node IRL/XRL/LHS, AND-node
+     cause/predecessor/symbol) on `Vec<Option<_>>`.
+
+4. **`MARPA_ASF_STATS=1`** instrumentation — opt-in counters
+   (asf_news, glades_visited, singleton_fast_path_hits,
+   general_factoring_fallback, factorings_built, or/and cache
+   hit/miss, max source nids per glade, max factorings per
+   symch). No overhead when unset.
+
+## Validation
+
+### Article-2025.tex (579 formulae, 87.3 % raw-unambiguous, single-thread bench)
 
 | Mode | Wall (3-run avg) | vs LEGACY |
 |---|---:|---:|
-| **HYBRID default** | **12.45s** | **1.01×** |
-| `LATEXML_MARPA_LEGACY=1` | 12.32s | 1.00× |
-| `LATEXML_MARPA_ASF_ONLY=1` | 16.80s | 1.36× |
+| **HYBRID default** | **12.45 s** | **1.01×** |
+| `LATEXML_MARPA_LEGACY=1` | 12.32 s | 1.00× |
+| `LATEXML_MARPA_ASF_ONLY=1` | 16.80 s | 1.36× |
 
-### Codex's optimization list — status
+### latexml-oxide 100-paper math-bound sample (quiet host, marpa `0bf24111`)
 
-| # | Item | Status | Impact (Article-2025) |
-|---|---|---|---|
-| 1 | Hybrid routing | landed `9318960974` / marpa `60b320b` | ASF→HYBRID: 17.0s → 12.4s |
-| 2 | Singleton fast path in `compute_symches` | landed by codex | embedded in hybrid baseline |
-| 3 | Bocage metadata caches | landed `a045778` | flat (RefCell overhead ≈ FFI savings) |
-| 4 | Flatten factoring storage | DEFERRED (codex senior-engineer caution) | n/a |
-| 5 | Clean traversal internals | landed `a045778` + codex's generic recursion | flat; correctness/quality |
-| 6 | Odometer Cartesian product | landed `109390fe92` | HYBRID: ~1.5% (only ambiguous-glade reduction) |
-
-### Quality / correctness improvements beyond codex's list
-
-- **`collect_factorings` propagates `Result`** (`96fd092`) — the
-  prior `.unwrap_or(default)` silently mapped FFI errors to a
-  bogus token-and-node default. Now `?`-propagates.
-- **Audit relaxation as `parity_outcomes_compatible`** with 8
-  unit tests (`0a8a171859`) — the audit's `Empty`-vs-`Rejected`
-  false-positive on shallow pragma rejections is now guarded
-  by a regression test.
-- **`Glade.visited` field and `glade_is_visited` helper removed**
-  — dead defensive code post-`VisitState` cycle protection.
-- **`Rc<str>` Lexeme + `Rc<Vec<Option<XM>>>` ParseTree** kept
-  even though direct perf was 0% — removes deep-clone hazards
-  from the marpa cache hit/insert paths.
-
-### Structural ASF_ONLY → LEGACY gap (residual ~4.5s)
-
-After all Rust-side cleanup, ASF_ONLY remains ~37% slower than
-LEGACY on `Article-2025.tex`. The residual gap is **structural**:
-ASF builds a Rust-side glade representation (bocage walk +
-per-or-node Nidset + Glade allocations) that Step-iteration
-skips entirely. Singleton fast path eliminates the
-`compute_symches` factoring chain for 87% of glades, but the
-glade-bookkeeping fixed overhead persists.
-
-Further wins would require either:
-- libmarpa C-side surgery (out of scope — we don't own libmarpa)
-- Restructuring ASF to skip the Nidset/Glade allocation when the
-  forest is wholly unambiguous (large refactor; hybrid already
-  achieves the same effect from the user perspective by skipping
-  ASF entirely for that case)
-
-Both yield diminishing returns vs the hybrid escape hatch.
-
-### Tests at session close
-
-- marpa: **26/0** (23 prior + 3 new stats-module unit tests)
-- latexml-oxide: 1309/0 (1301 prior + 8 new parity-helper tests)
-- Parity audit clean on Article-2025.tex (3902 parse calls) and
-  TheDiskComplex.tex (681 parse calls)
-- sin[XY] fixture (physics.tex): bit-identical HTML across all
-  three modes
-
-## MARPA_ASF_STATS counters — empirical data (2026-05-18)
-
-The instrumentation plan landed as `MARPA_ASF_STATS=1`
-(opt-in, no overhead when unset). First measurement run on
-`Article-2025.tex`:
-
-### ASF_ONLY mode (all 3902 formulae through ASF)
-
-```
-asf_news=3902
-glades_visited=4_999_219    (≈5M)
-compute_symches_calls=4_999_219   (1:1 with glades)
-symches_built=2_975_353
-factorings_built=2_975_380
-omitted_factorings=0        (factoring_max=42 never hit)
-singleton_fast_path_hits=2_974_789   (99.98% of factorings)
-general_factoring_fallback=564       (0.02%)
-max_source_nids_per_glade=3
-max_factorings_per_symch=4
-or_node_cache_hit/miss=5_950_020 / 2_975_353  (67% hit)
-and_node_cache_hit/miss=4_049_248 / 5_002_490  (45% hit)
-```
-
-### HYBRID mode (only 497 ambiguous formulae through ASF)
-
-```
-asf_news=497
-glades_visited=369_148    (≈13× fewer than ASF_ONLY)
-singleton_fast_path_hits=228_901
-general_factoring_fallback=564   ← SAME 564 as ASF_ONLY
-```
-
-The identical 564 fallback count under both modes is
-illuminating: every single non-singleton factoring on this
-paper comes from the 12.7% raw-ambiguous formula fraction.
-Unambiguous formulae take the singleton fast path
-unconditionally — they don't contribute to the slow-path cost.
-
-### Decision on the deferred "flatten factoring storage" item
-
-Codex's senior-engineering caution against starting on item #4
-was correct. The counter data closes that question:
-
-- The typical `Symch.factorings` has length 1 (singleton fast
-  path returns `vec![singleton_factoring]`).
-- Maximum factorings per symch on this paper: 4.
-- Total factoring count: 2.97M in ASF_ONLY, 230k in HYBRID.
-
-Flattening `Vec<Vec<usize>>` to `SmallVec<[Vec<usize>; 1]>`
-would inline storage for the common length-1 case, replacing
-24-byte Vec headers with ~48-byte SmallVec headers. On 3M
-symches that **REGRESSES memory by ~72MB inline** for
-negligible runtime gain — the singleton fast path's outer Vec
-allocation is already a single short-lived heap alloc that
-LLVM's allocator handles cheaply.
-
-The flat-factoring-storage item is therefore **closed without
-implementation** — codex's caution and the counter data agree.
-
-### Decision on bocage metadata cache hit rates
-
-The cache hit rates are non-trivial:
-- OrNode cache: 67% hit rate (5.95M hits / 2.97M misses)
-- AndNode cache: 45% hit rate (4.05M hits / 5.00M misses)
-
-The miss-equals-write semantic means each miss populates the
-slot, so a 45% AndNode hit rate corresponds to ~4.05M repeated
-reads against ~5M distinct and-node ids. Repeats come from
-`collect_factorings` recursion visiting the same and-nodes
-across multiple factorings — exactly the case the cache was
-designed to short-circuit. Cache utility confirmed.
-
-## Follow-up from latexml-oxide perf review (2026-05-18)
-
-New downstream aggregate data in
-`latexml-oxide/docs/PERFORMANCE.md` puts the Marpa/ASF work in
-context:
-
-| Phase | % wall | mean / job |
-|---|---:|---:|
-| graphics | 36.5% | 1047 ms |
-| digest | 20.3% | 582 ms |
-| math_parse | 17.0% | 488 ms |
-| build | 11.5% | 331 ms |
-
-Top perf symbols on the math-heavy `1011.1955` XML profile include
-`marpa_r_earleme_complete`, `postdot_items_create`, `bv_scan`,
-`marpa_b_new`, and `transitive_closure`. This confirms that ASF can
-help the `math_parse` band, but cannot by itself address most corpus
-wall time: recognizer and bocage work is paid before ASF traversal
-can help, and graphics/digest/build remain larger aggregate bands.
-
-### Ranked marpa-side candidates
-
-1. Keep hybrid routing as the default. The current data says this is
-   still the main win: only raw-ambiguous formulae enter ASF, and the
-   Article-2025 fixture stays within about 1% of the legacy tree path.
-2. Add a singleton nidset/glade cache in `marpa/src/asf.rs`. The
-   dominant hot-path shape repeatedly calls
-   `obtain_nidset_id(vec![cause_nid])`, which allocates, sorts, and
-   hashes a fresh one-element vector. A dedicated
-   `obtain_singleton_nidset_id(nid: i32)` keyed by `i32` should avoid
-   this work for the common singleton factoring case.
-3. If more ASF-internal work is justified after measuring the
-   singleton cache, consider removing `RefCell` from the bocage
-   metadata caches. The cache hit rates are real, but prior wall
-   timing suggested dynamic borrow overhead roughly offset the FFI
-   savings. A `&mut self` cache API may keep the cache benefit with
-   less overhead.
-4. Do not revive flat factoring storage without a new profile. The
-   May 18 counters showed tiny factoring lists, and inline storage
-   would likely increase memory for negligible runtime gain.
-
-### Downstream candidates likely to beat ASF micro-tuning
-
-The latexml-oxide aggregate reports 39.06M parse attempts producing
-45.84M surviving parses, a 17% over-parse rate. Work that avoids
-recognizer/bocage/ASF construction entirely is likely to beat further
-ASF traversal tuning:
-
-- grammar pruning for invalid ambiguity families;
-- semantic rejection before broad parse materialization where possible;
-- exact parsed-math caching for repeated normalized token streams in
-  equivalent math contexts.
-
-A demand-driven ASF API, closer to Perl's `rh_value(i)` model, may be
-worth considering only if corpus profiles show semantic pruning could
-reject parent alternatives before constructing most child outputs. It
-is a larger API change and should not be the next step without that
-evidence.
-
-### Next-machine validation request
-
-The preferred next implementation target is the singleton
-nidset/glade cache, validated on the machine with real examples. Use
-math-heavy fixtures that can report both wall time and
-`MARPA_ASF_STATS=1` counters. Compare at least:
-
-- `LATEXML_MARPA_HYBRID=1` before/after;
-- `LATEXML_MARPA_ASF_ONLY=1` before/after, to amplify ASF-internal
-  effects;
-- release or bench profile only;
-- wall, user/sys CPU, max RSS, math_parse time if available, and ASF
-  counters.
-
-## Closing measurement (2026-05-18) — perf/asf-allocation-trim
-
-The `perf/asf-allocation-trim` branch carries five changes:
-
-1. `f8c6a96` — skip cache-resident children when collecting
-   recursion targets in `traverse_glade_recursive`.
-2. `762541a` — `obtain_singleton_nidset_id(i32)` fast path for
-   the dominant `vec![cause_nid]` shape.
-3. `f7e1311` — bocage metadata cache overhead trim.
-4. `501f131` — avoid cloning singleton source nidsets.
-5. `5f6a19e` — `parse_hybrid_with_and_node_limit(...)` + new
-   `HybridParseResult::AmbiguousTree(Tree, BocageStats)` variant
-   for large-bocage Tree-iter fallback. New thin API:
-   `Order::or_node_and_node_count_opt(usize)`.
-
-Validation against latexml-oxide on the 100-paper math-bound
-sample (top-100 by `phase_math_parse_us` in wp4 telemetry; the
-same fixture used for the prior HYBRID-no-cap measurement
-recorded in `latexml-oxide/docs/PERFORMANCE.md`):
+100 papers selected by top `phase_math_parse_us` in wp4 telemetry.
+Release+native+cortex, 8 workers, 180 s timeout, 8 GB ulimit.
 
 | Mode | OK / 100 | OOM aborts | Wall (n=98) | Δ vs LEGACY |
 |---|---:|---:|---:|---:|
-| LEGACY | 98 | 0 | 3188.6 s | — |
-| HYBRID, no cap (prior) | 79 | **19** | 2955.4 s on n=79 | +13.2 % on that subset |
-| **HYBRID, cap = 500 and-nodes** | **98** | **0** | **2274.3 s** | **−28.7 %** |
+| LEGACY | 98 | 0 | 2227.1 s | — |
+| HYBRID (cap = 500) | 98 | **0** | 2238.6 s | **+0.5 %** |
 
-The cap+fallback **fixes the 19 OOMs** the no-cap hybrid path
-introduced AND makes the corpus measurably faster than LEGACY
-on the same 98-paper subset: every paper's bocage either fits
-in ASF (cheap path with singleton + clone trims) or falls
-through to libmarpa Tree iteration (already-computed bocage
-shared — strictly cheaper than the LEGACY two-pass).
+HYBRID at parity with LEGACY (median per-paper +0.0 %, mean +1.0 %,
+76 of 98 papers within ±5 %), zero OOM aborts. Without the cap,
+HYBRID OOM-aborted 19 papers on this fixture; the
+500-and-node cap routes those through the Tree-iter fallback.
 
-Worst per-paper regression: +2.0 %. Only 2 of 98 papers slower
-than LEGACY at all. Largest single-paper gain: −51 %.
+Cap rationale: 500 is what downstream consumers (pragmatics
+selection + XMath builders in latexml-oxide) can usefully handle.
+Bigger bocages are treated as a pipeline-flaw signal — candidates
+for grammar tightening / earlier action-time pruning, not a
+target for raising the cap.
 
-The cap is wired with default 500 in latexml-oxide
-(`LATEXML_MARPA_HYBRID_AND_NODE_LIMIT`); set to `0` or `none`
-to disable. Treat the cap as a safety net — each formula that
-fires it is a candidate for grammar-level category tightening
-or earlier action-time pruning, not for raising the cap.
+### `MARPA_ASF_STATS` shape (Article-2025, ASF_ONLY mode)
 
-### Items closed and items deferred
+```
+glades_visited=4_999_219
+singleton_fast_path_hits=2_974_789   (99.98 % of factorings)
+general_factoring_fallback=564       (0.02 %)
+omitted_factorings=0                 (FACTORING_MAX=42 never hit)
+max_factorings_per_symch=4
+or_node_cache_hit/miss=5_950_020 / 2_975_353  (67 % hit)
+and_node_cache_hit/miss=4_049_248 / 5_002_490 (45 % hit)
+```
 
-**Closed in this branch:**
-- singleton nidset/glade cache (top item from the prior
-  next-machine list)
-- bocage-metadata-cache overhead trim (item 3)
-- source-nidset clone elimination (incremental win)
-- large-bocage Tree-iter fallback (item 2 from
-  `latexml-oxide/docs/PERFORMANCE.md`'s "Actionable next steps")
+In HYBRID mode only the 12.7 % raw-ambiguous fraction enters ASF,
+so absolute counters drop ~13×; the singleton-vs-general ratio
+and `general_factoring_fallback=564` are paper-invariant — every
+non-singleton factoring comes from raw-ambiguous formulae.
 
-**Open for follow-up:**
-- `RefCell` → `&mut self` API on bocage metadata caches —
-  still gated on a separate before/after profile against
-  ASF_ONLY=1.
-- Flat factoring storage — still **not justified** on May 18
-  counters; deferred indefinitely without new profile evidence.
-- Demand-driven `rh_value(i)` API — large change, gated on
-  evidence that semantic pruning can reject parent alternatives
-  before children construct.
+## Tested principles
 
-### Validation method actually used
+- **Hybrid routing is the main win**, not micro-optimization.
+  Allocation tweaks below moved the needle by ≤6 % cumulative on
+  Article-2025; hybrid routing alone moved 17.0 s → 12.4 s.
+- **The residual ASF_ONLY → LEGACY gap is structural.** ASF
+  builds a Rust-side glade/Nidset view + walks the bocage in
+  `compute_symches`. Step-iteration skips that entirely. The
+  gap (~37 % on Article-2025) is recoverable only via libmarpa
+  C-side surgery (out of scope) or by skipping ASF entirely on
+  wholly-unambiguous forests — which is what HYBRID already does
+  from the user's perspective.
+- **`compute_symches` per-glade cost is fixed overhead**, not
+  amortized by subtree sharing on unambiguous input. This is why
+  HYBRID's `metric == 1` fast path matters.
+- **The singleton factoring path dominates** in real workloads
+  (99.98 % of factorings on Article-2025). Optimising the
+  general path further has diminishing returns; optimising the
+  singleton path has near-zero returns because it's already
+  flat.
+- **Flat factoring storage** (`SmallVec<[Vec<usize>; 1]>` over
+  `Vec<Vec<usize>>`) is contra-indicated by counter data — most
+  symches have one factoring already, inlining the header would
+  *increase* memory by ~72 MB on a 3 M-symch workload for ~zero
+  runtime gain.
 
-Per the prior request: math-heavy fixture (100 papers, top by
-`phase_math_parse_us`), release+native+cortex profile, 8
-workers, 180 s timeout, 8 GB ulimit. Both LEGACY and HYBRID
-runs are against marpa commit `5f6a19e` so the comparison
-isolates the routing / cap decision rather than any unrelated
-binary drift.
+## Open work
+
+1. **`RefCell` → `&mut self` API on bocage metadata caches.**
+   Hit rates are non-trivial (OR 67 %, AND 45 %) so the caches
+   are useful, but the prior wall measurement suggested
+   `RefCell::borrow_mut` overhead roughly offset the FFI
+   savings. A non-RefCell API would need a before/after profile
+   against `LATEXML_MARPA_ASF_ONLY=1` (the mode where the
+   overhead matters most) before adopting.
+
+2. **Demand-driven `rh_value(i)` API.** Closer to Perl's
+   `Marpa::R2::ASF::rh_value` model — defer per-RHS-position
+   evaluation until the caller asks for it, so semantic pragmas
+   that reject a parent can skip child construction. Large API
+   change. Gated on corpus evidence that the math parser can
+   reject parent alternatives before constructing children;
+   without that evidence it would not pay back the complexity.
+
+3. **Caps and downstream cooperation.** The 500-and-node cap is
+   a latexml-oxide knob. If new downstream consumers want
+   different defaults, surface the routing decision as a
+   user-supplied closure rather than a single threshold.
+
+## Test coverage
+
+- `cargo test -p marpa --lib`: 26 unit tests, including the
+  `MARPA_ASF_STATS` snapshot/reset round-trip.
+- `marpa/tests/asf_traverse_parse.rs`: covers the three
+  `HybridParseResult` variants
+  (`Unambiguous`/`Ambiguous`/`AmbiguousTree`). The `PanicTraverser`
+  proves the ASF callback isn't invoked for unambiguous input.
+- `marpa/tests/asf_perf_compare.rs`: wrapper microbench
+  (panda + arith Catalan-explosion), now also asserting
+  per-paradigm correctness on the same inputs.
+
+## Reproducing the corpus measurements
+
+Math-heavy fixture (100 papers, top by `phase_math_parse_us`),
+release+native+cortex profile, 8 workers, 180 s timeout, 8 GB
+ulimit. To replicate or check for regression:
+
+```bash
+# In latexml-oxide:
+cargo build --release --bin cortex_worker --features cortex
+
+# HYBRID (default):
+tools/benchmark_canvas.sh \
+  --input-dir <math-bound-100-zips>/in \
+  --output-dir /tmp/out_hybrid \
+  --workers 8 --timeout 180
+
+# LEGACY (control):
+env LATEXML_MARPA_LEGACY=1 tools/benchmark_canvas.sh \
+  --input-dir <same input> --output-dir /tmp/out_legacy \
+  --workers 8 --timeout 180
+```
+
+Capture: results.tsv (per-paper wall, status, category) and
+`telemetry.jsonl` (phase breakdown). Compare on the both-OK
+subset; flag if HYBRID wall climbs back above LEGACY parity.
