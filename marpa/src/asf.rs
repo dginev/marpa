@@ -282,6 +282,12 @@ impl ASF {
             if cid == glade_id {
               continue;
             }
+            // Skip children whose memoized output is already in
+            // cache (sibling-recursion can populate them); avoids
+            // re-entering an already-Done glade just to no-op.
+            if matches!(cache.get(cid), Some(Some(_))) {
+              continue;
+            }
             if !seen.contains(&cid) {
               seen.push(cid);
             }
