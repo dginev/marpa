@@ -110,10 +110,10 @@ pub struct ASF {
   or_nodes: Vec<Nidset>,
   /// Lazy per-and-node FFI metadata cache. Sized to grow on first
   /// query; entries are stable once filled.
-  and_node_cache: std::cell::RefCell<Vec<Option<AndNodeInfo>>>,
+  and_node_cache: Vec<Option<AndNodeInfo>>,
   /// Lazy per-or-node FFI metadata cache. Same growth semantics
   /// as `and_node_cache`.
-  or_node_cache: std::cell::RefCell<Vec<Option<OrNodeInfo>>>,
+  or_node_cache: Vec<Option<OrNodeInfo>>,
   recce: Recognizer,
   bocage: Bocage,
 }
@@ -230,8 +230,8 @@ impl ASF {
       // OR-node id range is bounded by `or_nodes.len()` (we enumerated
       // them upfront). Pre-size to avoid growth in the hot path.
       // AND-node ids are unbounded from our side; grow on demand.
-      and_node_cache: std::cell::RefCell::new(Vec::new()),
-      or_node_cache: std::cell::RefCell::new(vec![None; or_node_count]),
+      and_node_cache: Vec::new(),
+      or_node_cache: vec![None; or_node_count],
       recce,
       bocage,
     })
@@ -428,6 +428,14 @@ impl ASF {
       }
     });
 
+    if source_nids.len() == 1 {
+      let first_nid = source_nids[0];
+      let symbol_id = self.nid_symbol_id(first_nid)?;
+      let is_token_glade = first_nid < 0;
+      let symch = self.build_symch_for_group(&source_nids)?;
+      return self.finish_glade(glade_id, vec![symch], symbol_id, is_token_glade);
+    }
+
     let mut source_data: Vec<(i32, i32)> = Vec::with_capacity(source_nids.len());
     for nid in &source_nids {
       let sort_ix = self.nid_sort_ix(*nid)?;
@@ -451,88 +459,7 @@ impl ASF {
       let group_nids: Vec<i32> = source_data[group_start..group_end].iter().map(|(_, n)| *n).collect();
       group_start = group_end;
 
-      let first_nid = group_nids[0];
-      let rule_id = self.nid_rule_id(first_nid)?;
-
-      if rule_id < 0 {
-        // ---- Token symch ----
-        // Mirrors Perl ASF.pm: `push @factorings, [$glade_id]; push
-        // @symches, \@factorings;` — a self-referential factoring
-        // sentinel meaning "this glade IS a token leaf".
-        // The token's own glade-id is the singleton nidset wrapping
-        // the same negative nid we're already standing on.
-        let token_glade_id = self.obtain_singleton_glade_id(first_nid);
-        symches.push(Symch {
-          rule_id: -1,
-          factorings: vec![vec![token_glade_id]],
-          omitted: false,
-        });
-        continue;
-      }
-
-      // ---- Rule symch ----
-      // Each factoring is a sequence of RHS positions, left-to-right.
-      // Each RHS position is a SET of child-nids (possibly multiple
-      // ids unified into one glade — Perl `glade_id_factors` does this
-      // grouping for and-nodes that share a predecessor; here we do
-      // the equivalent by grouping contiguous same-predecessor
-      // and-nodes within each or-node we visit).
-      let mut omitted = false;
-      let factorings = if let Some(singleton_factoring) = self.try_singleton_factoring(&group_nids)? {
-        with_stats(|s| s.singleton_fast_path_hits += 1);
-        vec![singleton_factoring]
-      } else {
-        with_stats(|s| s.general_factoring_fallback += 1);
-        let mut raw_factorings: Vec<Vec<Vec<i32>>> = Vec::new();
-        for &nid in &group_nids {
-          if raw_factorings.len() >= FACTORING_MAX {
-            omitted = true;
-            break;
-          }
-          let mut work_stack: Vec<Vec<i32>> = Vec::new();
-          self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, &mut omitted)?;
-          if omitted {
-            break;
-          }
-        }
-
-        // Translate each per-position cause-nid set into a registered
-        // child glade id (a multi-nid nidset becomes a multi-source
-        // glade — this is where parallel alternatives unify).
-        let mut factorings: Vec<Vec<usize>> = Vec::with_capacity(raw_factorings.len());
-        for position_sets in raw_factorings {
-          let mut child_glade_ids: Vec<usize> = Vec::with_capacity(position_sets.len());
-          for cause_nids in position_sets {
-            let child_glade_id = if let [nid] = cause_nids.as_slice() {
-              self.obtain_singleton_glade_id(*nid)
-            } else {
-              let child_glade_id = self.obtain_nidset_id(cause_nids);
-              self.register_glade(child_glade_id);
-              child_glade_id
-            };
-            child_glade_ids.push(child_glade_id);
-          }
-          factorings.push(child_glade_ids);
-        }
-        factorings
-      };
-
-      with_stats(|s| {
-        s.symches_built += 1;
-        let f = factorings.len() as u64;
-        s.factorings_built += f;
-        if f as u32 > s.max_factorings_per_symch {
-          s.max_factorings_per_symch = f as u32;
-        }
-        if omitted {
-          s.omitted_factorings += 1;
-        }
-      });
-      symches.push(Symch {
-        rule_id,
-        factorings,
-        omitted,
-      });
+      symches.push(self.build_symch_for_group(&group_nids)?);
     }
 
     // --- Phase 3: precompute symbol_id and write back. The symbol_id
@@ -540,6 +467,100 @@ impl ASF {
     // glade share the same LHS symbol (or the same token id).
     let symbol_id = self.nid_symbol_id(source_data[0].1)?;
 
+    self.finish_glade(glade_id, symches, symbol_id, is_token_glade)
+  }
+
+  fn build_symch_for_group(&mut self, group_nids: &[i32]) -> Result<Symch> {
+    let first_nid = group_nids[0];
+    let rule_id = self.nid_rule_id(first_nid)?;
+
+    if rule_id < 0 {
+      // ---- Token symch ----
+      // Mirrors Perl ASF.pm: `push @factorings, [$glade_id]; push
+      // @symches, \@factorings;` — a self-referential factoring
+      // sentinel meaning "this glade IS a token leaf".
+      // The token's own glade-id is the singleton nidset wrapping
+      // the same negative nid we're already standing on.
+      let token_glade_id = self.obtain_singleton_glade_id(first_nid);
+      return Ok(Symch {
+        rule_id: -1,
+        factorings: vec![vec![token_glade_id]],
+        omitted: false,
+      });
+    }
+
+    // ---- Rule symch ----
+    // Each factoring is a sequence of RHS positions, left-to-right.
+    // Each RHS position is a SET of child-nids (possibly multiple
+    // ids unified into one glade — Perl `glade_id_factors` does this
+    // grouping for and-nodes that share a predecessor; here we do
+    // the equivalent by grouping contiguous same-predecessor
+    // and-nodes within each or-node we visit).
+    let mut omitted = false;
+    let factorings = if let Some(singleton_factoring) = self.try_singleton_factoring(group_nids)? {
+      with_stats(|s| s.singleton_fast_path_hits += 1);
+      vec![singleton_factoring]
+    } else {
+      with_stats(|s| s.general_factoring_fallback += 1);
+      let mut raw_factorings: Vec<Vec<Vec<i32>>> = Vec::new();
+      for &nid in group_nids {
+        if raw_factorings.len() >= FACTORING_MAX {
+          omitted = true;
+          break;
+        }
+        let mut work_stack: Vec<Vec<i32>> = Vec::new();
+        self.collect_factorings(nid, &mut work_stack, &mut raw_factorings, &mut omitted)?;
+        if omitted {
+          break;
+        }
+      }
+
+      // Translate each per-position cause-nid set into a registered
+      // child glade id (a multi-nid nidset becomes a multi-source
+      // glade — this is where parallel alternatives unify).
+      let mut factorings: Vec<Vec<usize>> = Vec::with_capacity(raw_factorings.len());
+      for position_sets in raw_factorings {
+        let mut child_glade_ids: Vec<usize> = Vec::with_capacity(position_sets.len());
+        for cause_nids in position_sets {
+          let child_glade_id = if let [nid] = cause_nids.as_slice() {
+            self.obtain_singleton_glade_id(*nid)
+          } else {
+            let child_glade_id = self.obtain_nidset_id(cause_nids);
+            self.register_glade(child_glade_id);
+            child_glade_id
+          };
+          child_glade_ids.push(child_glade_id);
+        }
+        factorings.push(child_glade_ids);
+      }
+      factorings
+    };
+
+    with_stats(|s| {
+      s.symches_built += 1;
+      let f = factorings.len() as u64;
+      s.factorings_built += f;
+      if f as u32 > s.max_factorings_per_symch {
+        s.max_factorings_per_symch = f as u32;
+      }
+      if omitted {
+        s.omitted_factorings += 1;
+      }
+    });
+    Ok(Symch {
+      rule_id,
+      factorings,
+      omitted,
+    })
+  }
+
+  fn finish_glade(
+    &mut self,
+    glade_id: usize,
+    symches: Vec<Symch>,
+    symbol_id: i32,
+    is_token_glade: bool,
+  ) -> Result<&mut Glade> {
     let glade = self
       .glades
       .get_mut(glade_id)
@@ -605,7 +626,7 @@ impl ASF {
   /// leaf (no predecessor) the stack is reversed and pushed into
   /// `out`. `omitted` short-circuits once `FACTORING_MAX` is hit.
   fn collect_factorings(
-    &self,
+    &mut self,
     or_node_id: i32,
     work_stack: &mut Vec<Vec<i32>>,
     out: &mut Vec<Vec<Vec<i32>>>,
@@ -624,45 +645,42 @@ impl ASF {
     // Mirrors Perl `set_last_choice`: extend the range while
     // predecessors match; when they differ, start a new group.
     //
-    // Hold a borrow into `self.or_nodes` for the iteration only;
-    // the borrow is released before the recursion in `groups`
-    // below. `self.and_node_info(_)` uses RefCell internally so
-    // it composes with the shared `self.or_nodes` borrow.
+    // Use index lookups so the immutable borrow of `self.or_nodes`
+    // ends before `and_node_info` mutably populates the cache.
     let mut groups: Vec<(Option<i32>, Vec<i32>)> = Vec::new();
-    {
-      let and_node_ids: &[i32] = match self.or_nodes.get(or_node_id as usize) {
-        Some(ns) => ns.nids.as_slice(),
-        None => return Ok(()),
+    let and_node_count = match self.or_nodes.get(or_node_id as usize) {
+      Some(ns) => ns.nids.len(),
+      None => return Ok(()),
+    };
+    for ix in 0..and_node_count {
+      let and_id = self.or_nodes[or_node_id as usize].nids[ix];
+      // Use the cached metadata for cause/predecessor — these
+      // are the inner FFI calls collect_factorings is built
+      // around, so caching them turns the per-and-node cost
+      // into a Vec index. A genuine FFI error here is
+      // propagated as the function's `Result` rather than
+      // silently mapped to a token-and-node default; the prior
+      // `.unwrap_or(default)` masked real bugs.
+      let info = self.and_node_info(and_id)?;
+      let pred: Option<i32> = info.predecessor;
+      let cause_nid: i32 = if info.cause < 0 {
+        // Token and-node: encode the and-node as a negative nid.
+        and_node_to_nid(and_id)
+      } else {
+        // Rule and-node: cause is the child or-node id.
+        info.cause
       };
-      for &and_id in and_node_ids {
-        // Use the cached metadata for cause/predecessor — these
-        // are the inner FFI calls collect_factorings is built
-        // around, so caching them turns the per-and-node cost
-        // into a Vec index. A genuine FFI error here is
-        // propagated as the function's `Result` rather than
-        // silently mapped to a token-and-node default; the prior
-        // `.unwrap_or(default)` masked real bugs.
-        let info = self.and_node_info(and_id)?;
-        let pred: Option<i32> = info.predecessor;
-        let cause_nid: i32 = if info.cause < 0 {
-          // Token and-node: encode the and-node as a negative nid.
-          and_node_to_nid(and_id)
-        } else {
-          // Rule and-node: cause is the child or-node id.
-          info.cause
-        };
-        // Extend the previous group iff the predecessor matches;
-        // otherwise start a new group.
-        if let Some(last) = groups.last_mut()
-          && last.0 == pred
-        {
-          if !last.1.contains(&cause_nid) {
-            last.1.push(cause_nid);
-          }
-          continue;
+      // Extend the previous group iff the predecessor matches;
+      // otherwise start a new group.
+      if let Some(last) = groups.last_mut()
+        && last.0 == pred
+      {
+        if !last.1.contains(&cause_nid) {
+          last.1.push(cause_nid);
         }
-        groups.push((pred, vec![cause_nid]));
+        continue;
       }
+      groups.push((pred, vec![cause_nid]));
     }
 
     for (pred, cause_nids) in groups {
@@ -698,19 +716,18 @@ impl ASF {
   // is immutable for the lifetime of the ASF, so each `(id, field)`
   // pair has a fixed answer. Cache them on first read.
   //
-  // We use `RefCell<Vec<Option<_>>>` so the caches are populated from
-  // `&self` accessors (the hot paths that read this metadata only
-  // need `&self`). Single-threaded by design — `Recognizer` /
-  // `Bocage` aren't `Send` anyway.
+  // These helpers take `&mut self` so cache population is a direct
+  // Vec read/write with no dynamic borrow checks. Single-threaded by
+  // design — `Recognizer` / `Bocage` aren't `Send` anyway.
 
   /// Read (or populate then read) the cached AndNodeInfo for an
   /// and-node id. The bocage may not have a `symbol` field for rule
   /// and-nodes, so `cause < 0 ⟹ symbol = Some(...)` is the
   /// invariant; for `cause >= 0` (rule and-nodes) we leave it None
   /// and the caller falls back to or-node metadata.
-  fn and_node_info(&self, and_node_id: i32) -> Result<AndNodeInfo> {
+  fn and_node_info(&mut self, and_node_id: i32) -> Result<AndNodeInfo> {
     let id = and_node_id as usize;
-    if let Some(Some(info)) = self.and_node_cache.borrow().get(id).copied() {
+    if let Some(Some(info)) = self.and_node_cache.get(id).copied() {
       with_stats(|s| s.and_node_cache_hits += 1);
       return Ok(info);
     }
@@ -727,20 +744,19 @@ impl ASF {
       None
     };
     let info = AndNodeInfo { cause, predecessor, symbol };
-    let mut cache = self.and_node_cache.borrow_mut();
-    if cache.len() <= id {
-      cache.resize(id + 1, None);
+    if self.and_node_cache.len() <= id {
+      self.and_node_cache.resize(id + 1, None);
     }
-    cache[id] = Some(info);
+    self.and_node_cache[id] = Some(info);
     Ok(info)
   }
 
   /// Read (or populate then read) the cached OrNodeInfo for an
   /// or-node id. Crosses three FFI calls on a cache miss: irl_id,
   /// xrl_id, lhs_id.
-  fn or_node_info(&self, or_node_id: i32) -> Result<OrNodeInfo> {
+  fn or_node_info(&mut self, or_node_id: i32) -> Result<OrNodeInfo> {
     let id = or_node_id as usize;
-    if let Some(Some(info)) = self.or_node_cache.borrow().get(id).copied() {
+    if let Some(Some(info)) = self.or_node_cache.get(id).copied() {
       with_stats(|s| s.or_node_cache_hits += 1);
       return Ok(info);
     }
@@ -750,15 +766,14 @@ impl ASF {
     let xrl_id = grammar.source_xrl(irl_id)?;
     let lhs_id = grammar.rule_lhs(xrl_id)?;
     let info = OrNodeInfo { xrl_id, lhs_id };
-    let mut cache = self.or_node_cache.borrow_mut();
-    if cache.len() <= id {
-      cache.resize(id + 1, None);
+    if self.or_node_cache.len() <= id {
+      self.or_node_cache.resize(id + 1, None);
     }
-    cache[id] = Some(info);
+    self.or_node_cache[id] = Some(info);
     Ok(info)
   }
 
-  fn nid_sort_ix(&self, nid: i32) -> Result<i32> {
+  fn nid_sort_ix(&mut self, nid: i32) -> Result<i32> {
     if nid >= 0 {
       // Rule nid → external rule id, served from the OrNode cache.
       return Ok(self.or_node_info(nid)?.xrl_id);
@@ -775,14 +790,14 @@ impl ASF {
 
   /// External rule id for a (positive) rule nid, or `-1` for a
   /// token nid. Mirrors Perl `nid_rule_id`.
-  fn nid_rule_id(&self, nid: i32) -> Result<i32> {
+  fn nid_rule_id(&mut self, nid: i32) -> Result<i32> {
     if nid < 0 {
       return Ok(-1);
     }
     Ok(self.or_node_info(nid)?.xrl_id)
   }
 
-  pub(crate) fn nid_token_id(&self, nid: i32) -> Result<Option<i32>> {
+  pub(crate) fn nid_token_id(&mut self, nid: i32) -> Result<Option<i32>> {
     if nid > NID_LEAF_BASE {
       return Ok(None);
     }
@@ -795,7 +810,7 @@ impl ASF {
     Ok(Some(token_id))
   }
 
-  pub(crate) fn nid_symbol_id(&self, nid: i32) -> Result<i32> {
+  pub(crate) fn nid_symbol_id(&mut self, nid: i32) -> Result<i32> {
     if let Some(token_id) = self.nid_token_id(nid)? {
       return Ok(token_id);
     } else if nid < 0 {
