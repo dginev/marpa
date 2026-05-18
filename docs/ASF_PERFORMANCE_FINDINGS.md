@@ -556,3 +556,76 @@ reads against ~5M distinct and-node ids. Repeats come from
 `collect_factorings` recursion visiting the same and-nodes
 across multiple factorings — exactly the case the cache was
 designed to short-circuit. Cache utility confirmed.
+
+## Follow-up from latexml-oxide perf review (2026-05-18)
+
+New downstream aggregate data in
+`latexml-oxide/docs/PERFORMANCE.md` puts the Marpa/ASF work in
+context:
+
+| Phase | % wall | mean / job |
+|---|---:|---:|
+| graphics | 36.5% | 1047 ms |
+| digest | 20.3% | 582 ms |
+| math_parse | 17.0% | 488 ms |
+| build | 11.5% | 331 ms |
+
+Top perf symbols on the math-heavy `1011.1955` XML profile include
+`marpa_r_earleme_complete`, `postdot_items_create`, `bv_scan`,
+`marpa_b_new`, and `transitive_closure`. This confirms that ASF can
+help the `math_parse` band, but cannot by itself address most corpus
+wall time: recognizer and bocage work is paid before ASF traversal
+can help, and graphics/digest/build remain larger aggregate bands.
+
+### Ranked marpa-side candidates
+
+1. Keep hybrid routing as the default. The current data says this is
+   still the main win: only raw-ambiguous formulae enter ASF, and the
+   Article-2025 fixture stays within about 1% of the legacy tree path.
+2. Add a singleton nidset/glade cache in `marpa/src/asf.rs`. The
+   dominant hot-path shape repeatedly calls
+   `obtain_nidset_id(vec![cause_nid])`, which allocates, sorts, and
+   hashes a fresh one-element vector. A dedicated
+   `obtain_singleton_nidset_id(nid: i32)` keyed by `i32` should avoid
+   this work for the common singleton factoring case.
+3. If more ASF-internal work is justified after measuring the
+   singleton cache, consider removing `RefCell` from the bocage
+   metadata caches. The cache hit rates are real, but prior wall
+   timing suggested dynamic borrow overhead roughly offset the FFI
+   savings. A `&mut self` cache API may keep the cache benefit with
+   less overhead.
+4. Do not revive flat factoring storage without a new profile. The
+   May 18 counters showed tiny factoring lists, and inline storage
+   would likely increase memory for negligible runtime gain.
+
+### Downstream candidates likely to beat ASF micro-tuning
+
+The latexml-oxide aggregate reports 39.06M parse attempts producing
+45.84M surviving parses, a 17% over-parse rate. Work that avoids
+recognizer/bocage/ASF construction entirely is likely to beat further
+ASF traversal tuning:
+
+- grammar pruning for invalid ambiguity families;
+- semantic rejection before broad parse materialization where possible;
+- exact parsed-math caching for repeated normalized token streams in
+  equivalent math contexts.
+
+A demand-driven ASF API, closer to Perl's `rh_value(i)` model, may be
+worth considering only if corpus profiles show semantic pruning could
+reject parent alternatives before constructing most child outputs. It
+is a larger API change and should not be the next step without that
+evidence.
+
+### Next-machine validation request
+
+The preferred next implementation target is the singleton
+nidset/glade cache, validated on the machine with real examples. Use
+math-heavy fixtures that can report both wall time and
+`MARPA_ASF_STATS=1` counters. Compare at least:
+
+- `LATEXML_MARPA_HYBRID=1` before/after;
+- `LATEXML_MARPA_ASF_ONLY=1` before/after, to amplify ASF-internal
+  effects;
+- release or bench profile only;
+- wall, user/sys CPU, max RSS, math_parse time if available, and ASF
+  counters.
