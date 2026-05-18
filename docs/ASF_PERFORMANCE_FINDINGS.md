@@ -416,3 +416,71 @@ Hybrid can become default-on only after:
 - `Article-2025.tex` remains within 1.05x of legacy.
 - A broader ambiguity audit still shows enough raw-unambiguous traffic
   to justify the extra branch complexity.
+
+## Closing State (2026-05-17, hybrid default landed)
+
+All five gate items above are now met. Hybrid is the default in
+latexml-oxide (`9318960974`); `LATEXML_MARPA_LEGACY=1` and
+`LATEXML_MARPA_ASF_ONLY=1` remain as opt-in escape hatches.
+
+### Final 3-way wall on `Article-2025.tex` (bench profile)
+
+| Mode | Wall (3-run avg) | vs LEGACY |
+|---|---:|---:|
+| **HYBRID default** | **12.45s** | **1.01×** |
+| `LATEXML_MARPA_LEGACY=1` | 12.32s | 1.00× |
+| `LATEXML_MARPA_ASF_ONLY=1` | 16.80s | 1.36× |
+
+### Codex's optimization list — status
+
+| # | Item | Status | Impact (Article-2025) |
+|---|---|---|---|
+| 1 | Hybrid routing | landed `9318960974` / marpa `60b320b` | ASF→HYBRID: 17.0s → 12.4s |
+| 2 | Singleton fast path in `compute_symches` | landed by codex | embedded in hybrid baseline |
+| 3 | Bocage metadata caches | landed `a045778` | flat (RefCell overhead ≈ FFI savings) |
+| 4 | Flatten factoring storage | DEFERRED (codex senior-engineer caution) | n/a |
+| 5 | Clean traversal internals | landed `a045778` + codex's generic recursion | flat; correctness/quality |
+| 6 | Odometer Cartesian product | landed `109390fe92` | HYBRID: ~1.5% (only ambiguous-glade reduction) |
+
+### Quality / correctness improvements beyond codex's list
+
+- **`collect_factorings` propagates `Result`** (`96fd092`) — the
+  prior `.unwrap_or(default)` silently mapped FFI errors to a
+  bogus token-and-node default. Now `?`-propagates.
+- **Audit relaxation as `parity_outcomes_compatible`** with 8
+  unit tests (`0a8a171859`) — the audit's `Empty`-vs-`Rejected`
+  false-positive on shallow pragma rejections is now guarded
+  by a regression test.
+- **`Glade.visited` field and `glade_is_visited` helper removed**
+  — dead defensive code post-`VisitState` cycle protection.
+- **`Rc<str>` Lexeme + `Rc<Vec<Option<XM>>>` ParseTree** kept
+  even though direct perf was 0% — removes deep-clone hazards
+  from the marpa cache hit/insert paths.
+
+### Structural ASF_ONLY → LEGACY gap (residual ~4.5s)
+
+After all Rust-side cleanup, ASF_ONLY remains ~37% slower than
+LEGACY on `Article-2025.tex`. The residual gap is **structural**:
+ASF builds a Rust-side glade representation (bocage walk +
+per-or-node Nidset + Glade allocations) that Step-iteration
+skips entirely. Singleton fast path eliminates the
+`compute_symches` factoring chain for 87% of glades, but the
+glade-bookkeeping fixed overhead persists.
+
+Further wins would require either:
+- libmarpa C-side surgery (out of scope — we don't own libmarpa)
+- Restructuring ASF to skip the Nidset/Glade allocation when the
+  forest is wholly unambiguous (large refactor; hybrid already
+  achieves the same effect from the user perspective by skipping
+  ASF entirely for that case)
+
+Both yield diminishing returns vs the hybrid escape hatch.
+
+### Tests at session close
+
+- marpa: 23/0 (incl. 2 new hybrid tests)
+- latexml-oxide: 1309/0 (1301 prior + 8 new parity-helper tests)
+- Parity audit clean on Article-2025.tex (3902 parse calls) and
+  TheDiskComplex.tex (681 parse calls)
+- sin[XY] fixture (physics.tex): bit-identical HTML across all
+  three modes
