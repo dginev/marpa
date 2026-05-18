@@ -1,5 +1,6 @@
 mod glade;
 mod nidset;
+mod stats;
 
 use std::collections::HashMap;
 
@@ -8,6 +9,8 @@ use crate::thin::{Bocage, Order, Recognizer};
 
 pub use self::glade::*;
 pub use self::nidset::*;
+pub use self::stats::{AsfStats, asf_stats_enabled, reset, snapshot};
+use self::stats::with_stats;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum VisitState {
@@ -173,6 +176,7 @@ impl ASF {
   /// `Bocage::ambiguity_metric()` before deciding whether to traverse
   /// the ASF. Passing the bocage through avoids constructing it twice.
   pub fn from_parts(recce: Recognizer, bocage: Bocage) -> Result<Self> {
+    with_stats(|s| s.asf_news += 1);
     let mut ordering = bocage.get_ordering().expect(
       "An attempt was make to create an ASF for a null parse\n
           A null parse is a successful parse of a zero-length string\n
@@ -258,8 +262,10 @@ impl ASF {
     TR::ParseTree: Clone,
   {
     if let Some(Some(cached)) = cache.get(glade_id) {
+      with_stats(|s| s.cache_hits += 1);
       return Ok(cached.clone());
     }
+    with_stats(|s| s.glades_visited += 1);
     if visit_state.len() <= glade_id {
       visit_state.resize(glade_id + 1, VisitState::Unseen);
     }
@@ -320,6 +326,7 @@ impl ASF {
       .and_then(|o| o.as_mut())
       .expect("glade entry must exist after obtain_glade");
     glade.rewind();
+    with_stats(|s| s.user_callbacks += 1);
     let output = traverser.traverse_glade(glade, cache.as_slice(), state)?;
     cache_set(cache, glade_id, output.clone());
     visit_state[glade_id] = VisitState::Done;
@@ -377,6 +384,7 @@ impl ASF {
   }
 
   fn compute_symches(&mut self, glade_id: usize) -> Result<&mut Glade> {
+    with_stats(|s| s.compute_symches_calls += 1);
     // --- Phase 1: gather source nids and sort by sort_ix (== XRL or
     // token-id, depending on the nid sign). Same as the original
     // scaffolding, but cleaned up.
@@ -387,6 +395,12 @@ impl ASF {
       .unwrap_or_else(|| panic!("No nidset registered for glade ID {glade_id}"))
       .nids
       .clone();
+    with_stats(|s| {
+      let n = source_nids.len() as u32;
+      if n > s.max_source_nids_per_glade {
+        s.max_source_nids_per_glade = n;
+      }
+    });
 
     let mut source_data: Vec<(i32, i32)> = Vec::with_capacity(source_nids.len());
     for nid in &source_nids {
@@ -441,8 +455,10 @@ impl ASF {
       // and-nodes within each or-node we visit).
       let mut omitted = false;
       let factorings = if let Some(singleton_factoring) = self.try_singleton_factoring(&group_nids)? {
+        with_stats(|s| s.singleton_fast_path_hits += 1);
         vec![singleton_factoring]
       } else {
+        with_stats(|s| s.general_factoring_fallback += 1);
         let mut raw_factorings: Vec<Vec<Vec<i32>>> = Vec::new();
         for &nid in &group_nids {
           if raw_factorings.len() >= factoring_max {
@@ -472,6 +488,17 @@ impl ASF {
         factorings
       };
 
+      with_stats(|s| {
+        s.symches_built += 1;
+        let f = factorings.len() as u64;
+        s.factorings_built += f;
+        if f as u32 > s.max_factorings_per_symch {
+          s.max_factorings_per_symch = f as u32;
+        }
+        if omitted {
+          s.omitted_factorings += 1;
+        }
+      });
       symches.push(Symch {
         rule_id,
         factorings,
@@ -655,8 +682,10 @@ impl ASF {
   fn and_node_info(&self, and_node_id: i32) -> Result<AndNodeInfo> {
     let id = and_node_id as usize;
     if let Some(Some(info)) = self.and_node_cache.borrow().get(id).copied() {
+      with_stats(|s| s.and_node_cache_hits += 1);
       return Ok(info);
     }
+    with_stats(|s| s.and_node_cache_misses += 1);
     let cause = self.bocage.and_node_cause(and_node_id)?;
     let pred_raw = self.bocage.and_node_predecessor(and_node_id);
     let predecessor = match pred_raw {
@@ -683,8 +712,10 @@ impl ASF {
   fn or_node_info(&self, or_node_id: i32) -> Result<OrNodeInfo> {
     let id = or_node_id as usize;
     if let Some(Some(info)) = self.or_node_cache.borrow().get(id).copied() {
+      with_stats(|s| s.or_node_cache_hits += 1);
       return Ok(info);
     }
+    with_stats(|s| s.or_node_cache_misses += 1);
     let irl_id = self.bocage.or_node_irl(or_node_id)?;
     let grammar = self.recce.grammar();
     let xrl_id = grammar.source_xrl(irl_id)?;
