@@ -478,9 +478,81 @@ Both yield diminishing returns vs the hybrid escape hatch.
 
 ### Tests at session close
 
-- marpa: 23/0 (incl. 2 new hybrid tests)
+- marpa: **26/0** (23 prior + 3 new stats-module unit tests)
 - latexml-oxide: 1309/0 (1301 prior + 8 new parity-helper tests)
 - Parity audit clean on Article-2025.tex (3902 parse calls) and
   TheDiskComplex.tex (681 parse calls)
 - sin[XY] fixture (physics.tex): bit-identical HTML across all
   three modes
+
+## MARPA_ASF_STATS counters — empirical data (2026-05-18)
+
+The instrumentation plan landed as `MARPA_ASF_STATS=1`
+(opt-in, no overhead when unset). First measurement run on
+`Article-2025.tex`:
+
+### ASF_ONLY mode (all 3902 formulae through ASF)
+
+```
+asf_news=3902
+glades_visited=4_999_219    (≈5M)
+compute_symches_calls=4_999_219   (1:1 with glades)
+symches_built=2_975_353
+factorings_built=2_975_380
+omitted_factorings=0        (factoring_max=42 never hit)
+singleton_fast_path_hits=2_974_789   (99.98% of factorings)
+general_factoring_fallback=564       (0.02%)
+max_source_nids_per_glade=3
+max_factorings_per_symch=4
+or_node_cache_hit/miss=5_950_020 / 2_975_353  (67% hit)
+and_node_cache_hit/miss=4_049_248 / 5_002_490  (45% hit)
+```
+
+### HYBRID mode (only 497 ambiguous formulae through ASF)
+
+```
+asf_news=497
+glades_visited=369_148    (≈13× fewer than ASF_ONLY)
+singleton_fast_path_hits=228_901
+general_factoring_fallback=564   ← SAME 564 as ASF_ONLY
+```
+
+The identical 564 fallback count under both modes is
+illuminating: every single non-singleton factoring on this
+paper comes from the 12.7% raw-ambiguous formula fraction.
+Unambiguous formulae take the singleton fast path
+unconditionally — they don't contribute to the slow-path cost.
+
+### Decision on the deferred "flatten factoring storage" item
+
+Codex's senior-engineering caution against starting on item #4
+was correct. The counter data closes that question:
+
+- The typical `Symch.factorings` has length 1 (singleton fast
+  path returns `vec![singleton_factoring]`).
+- Maximum factorings per symch on this paper: 4.
+- Total factoring count: 2.97M in ASF_ONLY, 230k in HYBRID.
+
+Flattening `Vec<Vec<usize>>` to `SmallVec<[Vec<usize>; 1]>`
+would inline storage for the common length-1 case, replacing
+24-byte Vec headers with ~48-byte SmallVec headers. On 3M
+symches that **REGRESSES memory by ~72MB inline** for
+negligible runtime gain — the singleton fast path's outer Vec
+allocation is already a single short-lived heap alloc that
+LLVM's allocator handles cheaply.
+
+The flat-factoring-storage item is therefore **closed without
+implementation** — codex's caution and the counter data agree.
+
+### Decision on bocage metadata cache hit rates
+
+The cache hit rates are non-trivial:
+- OrNode cache: 67% hit rate (5.95M hits / 2.97M misses)
+- AndNode cache: 45% hit rate (4.05M hits / 5.00M misses)
+
+The miss-equals-write semantic means each miss populates the
+slot, so a 45% AndNode hit rate corresponds to ~4.05M repeated
+reads against ~5M distinct and-node ids. Repeats come from
+`collect_factorings` recursion visiting the same and-nodes
+across multiple factorings — exactly the case the cache was
+designed to short-circuit. Cache utility confirmed.
