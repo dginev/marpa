@@ -521,3 +521,124 @@ This document is hypothesis-driven until measured. Specifically:
 - The 12s legacy baseline benefits from convergence caps. If
   those caps were ever removed, legacy could lose its advantage
   on ambiguous inputs and the priority ordering might shift.
+
+## First-Pass Implementation Review (2026-05-17)
+
+Codex landed the consensus plan's hybrid routing as a first pass.
+Files modified:
+
+- `marpa/src/parser/mod.rs` — `Parser::parse_hybrid<T, U, TR>(...)`
+  returning `HybridParseResult<PT, PS>` (`Unambiguous(Tree)` |
+  `Ambiguous(PT, PS)`)
+- `marpa/src/asf.rs` — `ASF::from_parts(recce, bocage)` constructor;
+  existing `ASF::new(recce)` now delegates
+- `marpa/tests/asf_traverse_parse.rs` — two new tests:
+  `hybrid_parse_returns_tree_for_unambiguous_input` (asserts ASF
+  branch is *not* taken on unambiguous input via a `PanicTraverser`)
+  and `hybrid_parse_traverses_asf_for_ambiguous_input`
+- `latexml_math_parser/src/parser.rs` — hybrid dispatch wired
+  behind `LATEXML_MARPA_HYBRID=1` (or implicit under
+  `LATEXML_MATH_AMBIGUITY_AUDIT=1`); reuses
+  `Actions::get_tree` for unambiguous trees and `MathTraverser`
+  for ambiguous forests
+
+### What the first pass got right
+
+- **One-pass design**. `parse_hybrid` reads tokens once, builds
+  bocage once, branches on `ambiguity_metric()`. Avoids the
+  "compose `ambiguity_metric()` + `parse_and_traverse_forest()`"
+  anti-pattern explicitly called out in the consensus plan.
+- **`ASF::from_parts(recce, bocage)`** matches the consensus
+  recommendation exactly: it reuses an already-constructed bocage.
+- **`PanicTraverser` test pattern** is a much stronger assertion
+  than just checking the returned variant — it proves the user
+  callback is never invoked on the unambiguous branch.
+- **`HybridParseResult<PT, PS>` shape** is asymmetric in a way
+  that reflects the underlying reality: the unambiguous branch
+  returns a raw `Tree` iterator, the ambiguous branch returns an
+  ASF-traversed `PT`. Callers have to handle both, but the names
+  make that obvious.
+- **Staged rollout downstream**: hybrid is opt-in, not default.
+  Allows measurement under audit + soak before flipping.
+- **Audit instrumentation** matches Step 1 of the sequencing —
+  counts per-formula ambiguity metric distribution before any
+  default change.
+- **`drop(traverser)` before reusing `nodes`/`document`** in
+  `ActionContext` correctly handles the borrow-conflict between
+  `MathTraverser::document: &'a mut Document` and the downstream
+  `ActionContext::document`.
+
+### Issues that should land before flipping hybrid on by default
+
+1. **No parity assertion**. The consensus plan required (verbatim):
+   *"For unambiguous formulas, run both paths in audit mode on a
+   sample and assert identical XM output before enabling hybrid
+   by default."* This is missing from the first pass. Acceptable
+   shapes:
+   - A `LATEXML_MARPA_HYBRID_AUDIT_PARITY=1` mode that runs both
+     the hybrid-unambiguous path and the legacy/ASF path on every
+     raw-unambiguous formula and asserts identical `XM` output, OR
+   - A test fixture in `latexml_oxide/tests/parse/` that asserts
+     identical `.xml` output under `LATEXML_MARPA_LEGACY=1` and
+     `LATEXML_MARPA_HYBRID=1`
+
+2. **Asymmetric pruning semantics across branches**. The
+   unambiguous branch counts `Err` from `get_tree` once. The
+   ambiguous branch tallies `traverser.pruned_count` plus
+   result-Vec dedup separately. Both feed into the same
+   `pruned_trees` audit variable. This is fine as a count, but
+   downstream tests that compare prune counts across paths will
+   see drift. Either:
+   - Document that hybrid `pruned_trees` is not directly
+     comparable to legacy/ASF, OR
+   - Normalize the counts (decide which kind of "prune" the
+     audit counter represents and align both branches)
+
+3. **`record_ambiguity_metric` atomics**. The function uses
+   `Ordering::Relaxed` increments followed by `Ordering::Relaxed`
+   reads — the read after the conditional fetch_add is not
+   atomic with the increment, so a concurrent caller can print
+   interleaved or stale counter values. Single-threaded today,
+   but the cortex_worker path runs concurrent parses. Either:
+   - Add a comment that audit output is best-effort and
+     single-thread-only
+   - Use a single fetch_add and load the running total once
+
+4. **`parse_hybrid` state asymmetry**: the unambiguous branch
+   sets `self.state = T(tree.clone())`; the ambiguous branch
+   leaves `self.state = GReady` (because the `mem::replace` in
+   the entry already put it there). The downstream caller is
+   one-shot for math parsing, so neither is reused — but a
+   future caller that *does* reuse the parser will see different
+   resumption shapes. Either:
+   - Make the ambiguous branch also set `self.state` to a
+     defined post-traversal state, OR
+   - Document explicitly that `parse_hybrid` consumes the
+     parser's R-state regardless of branch
+
+5. **No perf measurement landed yet**. Codex reported "testing"
+   which is the 1301-test suite. The load-bearing measurement is
+   the `Article-2025.tex` benchmark under `LATEXML_MARPA_HYBRID=1`.
+   Target from the consensus plan: ASF wall ≤ 1.05x LEGACY wall.
+
+### Acceptance gate before flipping hybrid default
+
+Before changing `PARSE_VIA_HYBRID`'s default from "opt-in" to
+"always-on-unless-LEGACY-flag":
+
+1. **1301/0 test suite** under `LATEXML_MARPA_HYBRID=1`. Same
+   bar as ASF default.
+2. **Parity assertion** between hybrid-unambiguous and
+   legacy/ASF on raw-unambiguous formulas — either as a test
+   fixture or an audit-mode equality check.
+3. **Article-2025.tex wall** ≤ 1.05× LEGACY (~12.6s) on the
+   release build.
+4. **Ambiguous fixture regression check**: known-ambiguous
+   formulas (`sin[XY]` family) still produce expected results
+   under hybrid (they exercise the ASF branch).
+5. **Audit-counter sanity**: a corpus run with
+   `LATEXML_MATH_AMBIGUITY_AUDIT=1` reports a sensible
+   unambiguous:ambiguous ratio (manual inspection — if the
+   unambiguous fraction is <50%, hybrid won't deliver the
+   expected wall reduction and we should revisit whether the
+   added complexity is worth it).
