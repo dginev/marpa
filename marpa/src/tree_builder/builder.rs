@@ -4,7 +4,7 @@ use crate::thin::Rule;
 use crate::thin::Symbol;
 use crate::tree_builder::tree::Handle;
 use crate::tree_builder::tree::Node;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 #[derive(Default, Clone)]
 pub struct TreeBuilder {

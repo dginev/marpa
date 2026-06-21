@@ -1,6 +1,6 @@
 use crate::result::Result;
 use crate::thin;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 pub struct Grammar {
     internal: thin::Grammar,
@@ -166,8 +166,8 @@ impl Grammar {
     }
 
     pub fn inverse_byte_set(&mut self, lhs: Option<Item>, bytes: &[u8]) -> Result<Item> {
-        use std::collections::HashSet;
-        let mut set: HashSet<u8> = HashSet::new();
+        use rustc_hash::FxHashSet as HashSet;
+        let mut set: HashSet<u8> = HashSet::default();
         for b in bytes.iter() {
             set.insert(*b);
         }

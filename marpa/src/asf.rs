@@ -2,7 +2,7 @@ mod glade;
 mod nidset;
 mod stats;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 use crate::result::Result;
 use crate::thin::{Bocage, Recognizer};
@@ -224,8 +224,8 @@ impl ASF {
       next_inset_id: 0,
       nidset_by_id: Vec::new(),
       glades: Vec::new(),
-      intset_by_key: HashMap::new(),
-      singleton_nidset_by_nid: HashMap::new(),
+      intset_by_key: HashMap::default(),
+      singleton_nidset_by_nid: HashMap::default(),
       or_nodes,
       // OR-node id range is bounded by `or_nodes.len()` (we enumerated
       // them upfront). Pre-size to avoid growth in the hot path.
