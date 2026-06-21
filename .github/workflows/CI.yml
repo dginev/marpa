@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, abstract_syntax_forests, modernization-refresh]
+    branches: [main, abstract_syntax_forests, modernization-refresh]
   pull_request:
-    branches: [master, abstract_syntax_forests]
+    branches: [main, abstract_syntax_forests]
 
 jobs:
   test:
