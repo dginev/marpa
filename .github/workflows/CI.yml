@@ -1,13 +1,44 @@
 name: CI
 
 on:
+  # Validate pushes only on main (post-merge). Feature branches are covered
+  # by pull_request while their PR is open — listing a branch here *and*
+  # having an open PR for it runs every check twice, once per event.
   push:
-    branches: [main, abstract_syntax_forests, modernization-refresh]
+    branches: [main]
   pull_request:
-    branches: [main, abstract_syntax_forests]
+    branches: [main]
 
 jobs:
+  # Build + test the vendored-libmarpa workspace on every target OS, proving
+  # the crate is portable: the cc/bindgen build path in libmarpa-sys/build.rs
+  # must drive cl.exe (windows-msvc) as well as cc/clang (linux, macos).
   test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # bindgen needs libclang. It is preinstalled on all three runners, but
+      # on Windows clang-sys only finds libclang.dll reliably when pointed at
+      # the LLVM bin directory explicitly.
+      - name: Set libclang path (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+      - name: cargo build
+        run: cargo build --workspace --all-targets
+      - name: cargo test
+        run: cargo test --workspace
+
+  # Lint once on Linux — clippy/rustfmt results are platform-independent, so
+  # running them across the matrix would only triple the chance of a flake.
+  lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,9 +46,5 @@ jobs:
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: cargo build
-        run: cargo build --workspace --all-targets
-      - name: cargo test
-        run: cargo test --workspace
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
