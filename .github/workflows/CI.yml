@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # Validate pushes only on main (post-merge). Feature branches are covered
+  # by pull_request while their PR is open — listing a branch here *and*
+  # having an open PR for it runs every check twice, once per event.
   push:
-    branches: [main, windows-compatibility]
+    branches: [main]
   pull_request:
     branches: [main]
 
