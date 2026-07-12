@@ -13,4 +13,4 @@ edition = "2024"
 
 [dependencies]
 rustc-hash = "2.0.0"
-libmarpa-sys = { version = "0.2.0", path = "../libmarpa-sys" }
+libmarpa-sys = { version = "0.3.0", path = "../libmarpa-sys" }
