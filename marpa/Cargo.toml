@@ -1,16 +1,26 @@
 [package]
-name = "marpa"
+# Renamed fork of `marpa` (the upstream name is taken on crates.io): the
+# ASF-completion (Abstract Syntax Forest) variant used by latexml-oxide.
+# Downstream depends on it via cargo's `package` alias
+# (`marpa = { package = "marpa-asf" }`), so `marpa::` in consumer code is
+# unchanged.
+name = "marpa-asf"
 version = "0.3.0"
 authors = [
   "Josh Robson Chase <josh@robsonchase.com>",
   "Deyan Ginev <deyan.ginev@gmail.com>",
 ]
-description = "Safe bindings to the libmarpa parsing engine"
+description = "Safe bindings to the libmarpa parsing engine, with Abstract Syntax Forest (ASF) completion"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dginev/marpa"
-documentation = "https://docs.rs/marpa"
+documentation = "https://docs.rs/marpa-asf"
+keywords = ["marpa", "parsing", "parser", "grammar", "earley"]
+categories = ["parsing"]
 edition = "2024"
 
 [dependencies]
 rustc-hash = "2.0.0"
-libmarpa-sys = { version = "0.3.0", path = "../libmarpa-sys" }
+# `package = "libmarpa-asf-sys"` keeps this crate's code using `libmarpa_sys::`
+# unchanged while depending on the renamed sys crate. Local builds resolve via
+# `path`; the published crate uses the `version`.
+libmarpa-sys = { package = "libmarpa-asf-sys", version = "0.3.0", path = "../libmarpa-sys" }

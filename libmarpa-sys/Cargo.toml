@@ -1,14 +1,20 @@
 [package]
-name = "libmarpa-sys"
+# Renamed fork of `libmarpa-sys` (the upstream name is taken on crates.io):
+# the ASF-completion variant vendored by latexml-oxide. The crate's lib name
+# stays the default, and downstream depends on it via cargo's `package` alias
+# (`libmarpa-sys = { package = "libmarpa-asf-sys" }`), so no code changes.
+name = "libmarpa-asf-sys"
 version = "0.3.0"
 authors = [
   "Josh Robson Chase <josh@robsonchase.com>",
   "Deyan Ginev <deyan.ginev@gmail.com>",
 ]
-description = "Low-level bindings to the libmarpa parsing engine"
+description = "Low-level bindings to the libmarpa parsing engine (ASF-completion fork; vendors libmarpa C)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/dginev/marpa"
-documentation = "https://docs.rs/libmarpa-sys"
+documentation = "https://docs.rs/libmarpa-asf-sys"
+keywords = ["marpa", "parsing", "bindings", "ffi", "earley"]
+categories = ["external-ffi-bindings", "parsing"]
 edition = "2024"
 
 [dependencies]
