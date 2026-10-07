@@ -1,4 +1,4 @@
-extern crate marpa;
+extern crate marpa_asf as marpa;
 
 use marpa::grammar::Grammar;
 use marpa::lexer::byte_scanner::*;

@@ -27,7 +27,7 @@
 //! difference at this scale. The classic explosion grammar
 //! `E → E + E | a` does — `Catalan(N-1)` parses on `N` operands.
 
-extern crate marpa;
+extern crate marpa_asf as marpa;
 
 use marpa::grammar::Grammar;
 use marpa::lexer::byte_scanner::*;

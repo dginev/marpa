@@ -16,9 +16,12 @@ impl fmt::Display for ByteToken {
     }
 }
 
+/// A token rebuilt from the parse: its value, `byte + 1` (`Token::value`), names the byte, whether
+/// it was read as the byte's own terminal or as a byte class holding it.
 impl From<(Symbol, i32)> for ByteToken {
-    fn from((sym, _): (Symbol, i32)) -> Self {
-        ByteToken(sym as u8)
+    fn from((_, value): (Symbol, i32)) -> Self {
+        debug_assert!((1..=256).contains(&value), "a byte token's value is its byte + 1, got {value}");
+        ByteToken((value - 1) as u8)
     }
 }
 

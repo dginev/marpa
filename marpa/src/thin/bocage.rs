@@ -103,6 +103,15 @@ impl Bocage {
             code => Err(format!("failed to get and_node symbol in Bocage: {code}").into()),
         }
     }
+    /// The value of a token and-node: the value its token was read with.
+    pub fn and_node_token_value(&self, node_id: i32) -> Result<i32> {
+        let mut value: ::std::os::raw::c_int = 0;
+        match unsafe { _marpa_b_and_node_token(self.internal, node_id, &mut value) } {
+            i if i >= 0 => Ok(value),
+            code => Err(format!("failed to get and_node (id {node_id}) token in Bocage: {code}").into()),
+        }
+    }
+
     pub fn and_node_predecessor(&self, node_id: i32) -> Option<i32> {
         match unsafe { _marpa_b_and_node_predecessor(self.internal, node_id) } {
             i if i > -2 => Some(i),

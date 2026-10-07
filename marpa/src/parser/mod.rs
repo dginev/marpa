@@ -1,9 +1,12 @@
 use std::mem;
 
+use libmarpa_sys::{MARPA_ERR_INACCESSIBLE_TOKEN, MARPA_ERR_UNEXPECTED_TOKEN_ID};
+
 use crate::asf::{ASF, Traverser};
 use crate::lexer::token::Token;
 use crate::lexer::token_source::TokenSource;
-use crate::result::Result;
+use crate::result::{err_code, Result};
+use crate::thin::ByteClasses;
 use crate::thin::{
     Bocage,
     Grammar,
@@ -122,6 +125,8 @@ impl Parser {
                 _ => self.adv_marpa()?,
             }
         }
+        let byte_classes = self.grammar.byte_classes();
+        let byte_classes = byte_classes.borrow();
         {
             // limit recognizer borrow
             let r = get_state!(self, R);
@@ -134,7 +139,7 @@ impl Parser {
                 match maybe_tok {
                     None => break,
                     Some(tok) => {
-                        Parser::consume_tok(r, tok)?;
+                        Parser::consume_tok(r, tok, &byte_classes)?;
                     }
                 }
             }
@@ -151,8 +156,36 @@ impl Parser {
         }
     }
 
-    fn consume_tok<U: Token>(r: &mut Recognizer, tok: U) -> Result<()> {
-        r.alternative(tok.sym(), tok.value(), 1)?;
+    /// Read one token: the token itself, and, for a byte, every byte class holding it
+    /// (`grammar::Grammar::byte_class`), as alternatives at one earleme. An alternative the
+    /// recognizer does not expect is passed over, as is the byte's own terminal when the byte is on
+    /// no rule but through its classes; when none is expected, the byte is unexpected, as it was
+    /// when its classes were alternative rules over their bytes.
+    fn consume_tok<U: Token>(r: &mut Recognizer, tok: U, byte_classes: &ByteClasses) -> Result<()> {
+        let classes = byte_classes.of(tok.sym());
+        if classes.is_empty() {
+            r.alternative(tok.sym(), tok.value(), 1)?;
+        } else {
+            let mut expected = false;
+            let mut rejected = false;
+            for sym in std::iter::once(tok.sym()).chain(classes.iter().copied()) {
+                match r.alternative(sym, tok.value(), 1) {
+                    Ok(()) => expected = true,
+                    // A soft rejection: the recognizer is unchanged.
+                    Err(e) if matches!(e.get_code(), MARPA_ERR_UNEXPECTED_TOKEN_ID | MARPA_ERR_INACCESSIBLE_TOKEN) => {
+                        rejected = true
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if !expected {
+                return err_code(MARPA_ERR_UNEXPECTED_TOKEN_ID);
+            }
+            if rejected {
+                // libmarpa recorded each rejection as the grammar's last error; the byte was read.
+                r.grammar.clear_error();
+            }
+        }
         r.earleme_complete()?;
         Ok(())
     }
@@ -252,7 +285,7 @@ impl Parser {
             } else {
                 if let Some(max_and_nodes) = max_and_nodes {
                     let mut order = Order::new(&bocage)?;
-                    let stats = bocage_stats(&mut order)?;
+                    let stats = bocage_stats(&mut order, &bocage)?;
                     if stats.and_node_count > max_and_nodes {
                         let tree = Tree::new(order)?;
                         self.state = T(tree.clone());
@@ -295,12 +328,30 @@ impl Parser {
     }
 }
 
-fn bocage_stats(order: &mut Order) -> Result<BocageStats> {
+/// The forest's size, as the hybrid cap reads it. A byte-class token is counted as the two nodes the
+/// class's alternative rules made for it (`internal ::= byte` below `lhs ::= internal`, now
+/// `lhs ::= class`; `grammar::Grammar::byte_class`): one or-node and one and-node more each, so a
+/// cap sees the forest of the byte grammar and routes every input as it did before byte classes.
+fn bocage_stats(order: &mut Order, bocage: &Bocage) -> Result<BocageStats> {
+    let grammar = bocage.grammar();
+    let byte_classes = grammar.byte_classes();
+    let byte_classes = byte_classes.borrow();
     let mut stats = BocageStats::default();
-    while let Some(and_node_count) = order.or_node_and_node_count_opt(stats.or_node_count)? {
+    let mut or_node_id = 0;
+    while let Some(and_node_count) = order.or_node_and_node_count_opt(or_node_id)? {
         stats.and_node_count += and_node_count;
         stats.max_and_nodes_per_or_node = stats.max_and_nodes_per_or_node.max(and_node_count);
         stats.or_node_count += 1;
+        if !byte_classes.is_empty() {
+            for and_node_id in order.or_node_and_node_ids(or_node_id) {
+                let token = bocage.and_node_symbol(and_node_id)?;
+                if token >= 0 && byte_classes.is_class(grammar.source_xsy(token)?) {
+                    stats.or_node_count += 1;
+                    stats.and_node_count += 1;
+                }
+            }
+        }
+        or_node_id += 1;
     }
     Ok(stats)
 }

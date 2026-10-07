@@ -46,7 +46,8 @@ audit table have been retired by Step 2 + Step 5.
 | `ASF::compute_symches` | `src/asf.rs` | ✅ Step 2 — factoring loop ported from Perl `ASF.pm` with predecessor-group unification (`set_last_choice` semantics). Mirrors `glade_obtain` lines 838-965. |
 | `ASF::traverse` | `src/asf.rs` | ✅ Step 5 — post-order recursive driver with `HashMap<glade_id, PT>` memoization. Each glade fires the user callback exactly once. |
 | `Glade::rule_id` | `src/asf/glade.rs` | ✅ Step 3 — reads from current symch's `rule_id` field. |
-| `Glade::symbol_id` | `src/asf/glade.rs` | ✅ |
+| `Glade::symbol_id` | `src/asf/glade.rs` | ✅ (a byte read through a byte class: the class terminal, 0.4.0) |
+| `Glade::token_value` | `src/asf/glade.rs` | ✅ 0.4.0 — the value a token glade's token was read with (a byte scanner's byte + 1); `None` for a rule glade or a nulling token. |
 | `Glade::symch_count`, `factor_count`, `is_factored`, `rh_length`, `rh_glade_id`, `next`, `rewind`, `is_token`, `cursor`, `symches()` | `src/asf/glade.rs` | ✅ Step 4 |
 | `Glade::literal` (token-glade input span) | — | **deferred** — needs SLR; latexml-oxide math parser doesn't need text spans (token-stream consumer). |
 | `Traverser` trait | `src/asf.rs` | ✅ Step 5 — redesigned to `fn(&mut self, &mut Glade, &HashMap<usize, PT>, &mut PS) -> Result<PT>`. |

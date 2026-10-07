@@ -49,6 +49,8 @@ pub struct Glade {
   /// glades have `symches.len() == 1` with `rule_id == -1` and a
   /// single self-referential factoring.
   pub(crate) is_token: bool,
+  /// For a token glade, the value its token was read with (`ASF::nid_token_value`).
+  pub(crate) token_value: Option<i32>,
   /// Iterator state for `Glade::next` — `(symch_ix, factoring_ix)`.
   /// Initialized to `(0, 0)` and advanced by `next()`.
   pub(crate) cursor: (usize, usize),
@@ -62,6 +64,7 @@ impl Default for Glade {
       registered: false,
       symches: Vec::new(),
       is_token: false,
+      token_value: None,
       cursor: (0, 0),
     }
   }
@@ -76,7 +79,10 @@ impl Glade {
 
   /// The grammar symbol this glade derives. For a non-token glade
   /// this is the LHS of the chosen rule; for a token glade it is
-  /// the token's external symbol id. Set by `ASF::compute_symches`.
+  /// the token's external symbol id: for a byte read as a byte class
+  /// (`Grammar::byte_set`, `inverse_byte_set`, `byte_range`), the class
+  /// terminal, its byte being `token_value() - 1`. Set by
+  /// `ASF::compute_symches`.
   pub fn symbol_id(&self) -> i32 {
     self.symbol_id
   }
@@ -93,6 +99,13 @@ impl Glade {
   /// have no real RHS — their sole "factoring" is the glade itself.
   pub fn is_token(&self) -> bool {
     self.is_token
+  }
+
+  /// For a token glade, the value its token was read with; for a byte scanner, `byte + 1`
+  /// whether the byte was read as its own terminal or as a byte class holding it. `None` for a
+  /// rule glade and for a nulling token, which has no value.
+  pub fn token_value(&self) -> Option<i32> {
+    self.token_value
   }
 
   /// External rule id of the **currently selected** symch.
