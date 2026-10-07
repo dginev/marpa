@@ -18,6 +18,7 @@ mod symbol;
 
 pub use crate::thin::bocage::Bocage;
 pub use crate::thin::config::Config;
+pub(crate) use crate::thin::grammar::ByteClasses;
 pub use crate::thin::grammar::Grammar;
 pub use crate::thin::order::Order;
 pub use crate::thin::recognizer::Recognizer;

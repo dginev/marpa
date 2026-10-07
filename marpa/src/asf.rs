@@ -437,7 +437,8 @@ impl ASF {
       let symbol_id = self.nid_symbol_id(first_nid)?;
       let is_token_glade = first_nid < 0;
       let symch = self.build_symch_for_group(&[first_nid])?;
-      return self.finish_glade(glade_id, vec![symch], symbol_id, is_token_glade);
+      let token_value = self.nid_token_value(first_nid)?;
+      return self.finish_glade(glade_id, vec![symch], symbol_id, is_token_glade, token_value);
     }
 
     let source_nids = source_nids.expect("non-singleton glades keep cloned source nids");
@@ -471,8 +472,9 @@ impl ASF {
     // is derived from the first source nid; all source nids in a
     // glade share the same LHS symbol (or the same token id).
     let symbol_id = self.nid_symbol_id(source_data[0].1)?;
+    let token_value = self.nid_token_value(source_data[0].1)?;
 
-    self.finish_glade(glade_id, symches, symbol_id, is_token_glade)
+    self.finish_glade(glade_id, symches, symbol_id, is_token_glade, token_value)
   }
 
   fn build_symch_for_group(&mut self, group_nids: &[i32]) -> Result<Symch> {
@@ -565,6 +567,7 @@ impl ASF {
     symches: Vec<Symch>,
     symbol_id: i32,
     is_token_glade: bool,
+    token_value: Option<i32>,
   ) -> Result<&mut Glade> {
     let glade = self
       .glades
@@ -575,6 +578,7 @@ impl ASF {
     glade.id = glade_id;
     glade.symbol_id = symbol_id;
     glade.is_token = is_token_glade;
+    glade.token_value = token_value;
     glade.cursor = (0, 0);
 
     Ok(glade)
@@ -813,6 +817,23 @@ impl ASF {
     };
     let token_id = self.recce.grammar().source_xsy(token_nsy_id)?;
     Ok(Some(token_id))
+  }
+
+  /// The value a token nid's token was read with; `None` for a rule nid, and for a nulling
+  /// token, which was read with no value.
+  pub(crate) fn nid_token_value(&mut self, nid: i32) -> Result<Option<i32>> {
+    if nid > NID_LEAF_BASE {
+      return Ok(None);
+    }
+    let and_node_id = nid_to_and_node(nid);
+    let token_nsy_id = match self.and_node_info(and_node_id)?.symbol {
+      Some(s) => s,
+      None => self.bocage.and_node_symbol(and_node_id)?,
+    };
+    if self.recce.grammar().nsy_is_nulling(token_nsy_id)? {
+      return Ok(None);
+    }
+    Ok(Some(self.bocage.and_node_token_value(and_node_id)?))
   }
 
   pub(crate) fn nid_symbol_id(&mut self, nid: i32) -> Result<i32> {

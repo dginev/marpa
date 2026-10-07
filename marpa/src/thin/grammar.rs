@@ -4,10 +4,39 @@ use crate::result::*;
 
 use crate::thin::{Config, EventIter, Rule, RuleIter, SymIter, Symbol};
 
+use std::cell::RefCell;
 use std::ptr;
+use std::rc::Rc;
 
 pub struct Grammar {
     internal: Marpa_Grammar,
+    byte_classes: Rc<RefCell<ByteClasses>>,
+}
+
+/// The byte classes of a grammar: terminals that each stand for a set of bytes, so a class such as
+/// "any byte but whitespace" is one terminal instead of an alternative rule per member byte. The
+/// scanner offers a byte as its own terminal and as every class holding it
+/// (`Parser::consume_tok`).
+#[derive(Default)]
+pub struct ByteClasses {
+    by_byte: Vec<Vec<Symbol>>,
+    classes: Vec<Symbol>,
+}
+
+impl ByteClasses {
+    /// The class terminals holding `byte`.
+    pub fn of(&self, byte: Symbol) -> &[Symbol] {
+        usize::try_from(byte).ok().and_then(|b| self.by_byte.get(b)).map_or(&[], Vec::as_slice)
+    }
+
+    /// Whether `sym` is a class terminal.
+    pub fn is_class(&self, sym: Symbol) -> bool {
+        self.classes.contains(&sym)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.classes.is_empty()
+    }
 }
 
 pub fn internal(grammar: &Grammar) -> Marpa_Grammar {
@@ -17,7 +46,10 @@ pub fn internal(grammar: &Grammar) -> Marpa_Grammar {
 impl Clone for Grammar {
     fn clone(&self) -> Grammar {
         unsafe { marpa_g_ref(self.internal) };
-        Grammar { internal: self.internal }
+        Grammar {
+            internal: self.internal,
+            byte_classes: Rc::clone(&self.byte_classes),
+        }
     }
 }
 
@@ -38,7 +70,10 @@ impl Grammar {
             cfg.error()?;
 
             assert!(marpa_g_force_valued(c_grammar) >= 0);
-            Ok(Grammar { internal: c_grammar })
+            Ok(Grammar {
+                internal: c_grammar,
+                byte_classes: Default::default(),
+            })
         }
     }
 
@@ -50,12 +85,33 @@ impl Grammar {
             cfg.error()?;
 
             assert!(marpa_g_force_valued(c_grammar) >= 0);
-            Ok(Grammar { internal: c_grammar })
+            Ok(Grammar {
+                internal: c_grammar,
+                byte_classes: Default::default(),
+            })
         }
     }
 
     pub fn internal(&self) -> Marpa_Grammar {
         self.internal
+    }
+
+    /// Declare the terminal `class` to stand for each byte in `members`, before precomputation:
+    /// `class` is a fresh symbol on no rule's left-hand side, and `members` are distinct (a byte
+    /// offered twice as one class is a duplicate token).
+    pub(crate) fn add_byte_class(&self, class: Symbol, members: impl IntoIterator<Item = u8>) {
+        let mut classes = self.byte_classes.borrow_mut();
+        if classes.by_byte.is_empty() {
+            classes.by_byte = vec![Vec::new(); 256];
+        }
+        classes.classes.push(class);
+        for byte in members {
+            classes.by_byte[usize::from(byte)].push(class);
+        }
+    }
+
+    pub(crate) fn byte_classes(&self) -> Rc<RefCell<ByteClasses>> {
+        Rc::clone(&self.byte_classes)
     }
 
     // either return the error result from the grammar or an empty Ok
@@ -71,6 +127,11 @@ impl Grammar {
 
     // either gets the error code from the grammar, or, in the event that there
     // is no error code, provide an error from a string.
+    /// Reset the last error to none.
+    pub fn clear_error(&self) {
+        unsafe { marpa_g_error_clear(self.internal) };
+    }
+
     pub fn error_or<T>(&self, s: &str) -> Result<T> {
         match self.error() {
             Ok(()) => err(s),
@@ -394,6 +455,16 @@ impl Grammar {
         match unsafe { _marpa_g_source_xrl(self.internal, irl_id) } {
             i if i < 0 => self.error_or("error getting source xrl"),
             i => Ok(i),
+        }
+    }
+
+    /// Whether an internal symbol is nulling: in a parse, a nulling token or-node, which has no
+    /// value.
+    pub fn nsy_is_nulling(&self, nsy: i32) -> Result<bool> {
+        match unsafe { _marpa_g_nsy_is_nulling(self.internal, nsy) } {
+            1 => Ok(true),
+            0 => Ok(false),
+            _ => self.error_or("error checking whether an nsy is nulling"),
         }
     }
 

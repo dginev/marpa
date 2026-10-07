@@ -156,34 +156,41 @@ impl Grammar {
         self.rule(lhs, &string_to_items(input))
     }
 
-    // TODO optimize this
+    /// `lhs ::= class`, where `class` is one terminal standing for each byte in `members`
+    /// (`thin::Grammar::add_byte_class`): the scanner offers a byte as every class holding it, so a
+    /// class costs the recognizer one terminal, not an alternative rule per member byte. The
+    /// language is the same as the alternative over the member bytes.
+    fn byte_class(&mut self, lhs: Option<Item>, members: impl IntoIterator<Item = u8>) -> Result<Item> {
+        let lhs = self.get_lhs(lhs)?;
+        let members: Vec<u8> = members.into_iter().collect();
+        // An empty class stays a symbol on no rule that no byte reads, as the empty alternative was.
+        let class = self.internal.new_symbol()?;
+        if !members.is_empty() {
+            self.internal.add_byte_class(class, members);
+        }
+        let r = self.internal.new_rule(lhs, &[class])?;
+        self.rules.insert(r, lhs);
+        Ok(Item::Rule(r))
+    }
+
     pub fn byte_range(&mut self, lhs: Option<Item>, from: u8, to: u8) -> Result<Item> {
-        self.alternative(lhs, &bytes_to_items(&(from..=to).collect::<Vec<u8>>()))
+        self.byte_class(lhs, from..=to)
     }
 
     pub fn byte_set(&mut self, lhs: Option<Item>, bytes: &[u8]) -> Result<Item> {
-        self.alternative(lhs, &bytes_to_items(bytes))
+        let mut members = [false; 256];
+        for b in bytes {
+            members[usize::from(*b)] = true;
+        }
+        self.byte_class(lhs, (0..=255u8).filter(|b| members[usize::from(*b)]))
     }
 
     pub fn inverse_byte_set(&mut self, lhs: Option<Item>, bytes: &[u8]) -> Result<Item> {
-        use rustc_hash::FxHashSet as HashSet;
-        let mut set: HashSet<u8> = HashSet::default();
-        for b in bytes.iter() {
-            set.insert(*b);
+        let mut excluded = [false; 256];
+        for b in bytes {
+            excluded[usize::from(*b)] = true;
         }
-
-        let lhs = self.get_lhs(lhs)?;
-        let internal = self.internal.new_symbol()?;
-
-        for b in (::std::ops::Range::<u16> { start: 0, end: 256 }) {
-            if !set.contains(&(b as u8)) {
-                self.internal.new_rule(internal, &[i32::from(b)])?;
-            }
-        }
-
-        let r = self.internal.new_rule(lhs, &[internal])?;
-        self.rules.insert(r, lhs);
-        Ok(Item::Rule(r))
+        self.byte_class(lhs, (0..=255u8).filter(|b| !excluded[usize::from(*b)]))
     }
 
     pub fn char_range(&mut self, lhs: Option<Item>, from: char, to: char) -> Result<Item> {
@@ -197,10 +204,6 @@ impl Grammar {
     pub fn inverse_string_set<S: Into<String>>(&mut self, lhs: Option<Item>, input: S) -> Result<Item> {
         self.inverse_byte_set(lhs, input.into().as_bytes())
     }
-}
-
-fn bytes_to_items(input: &[u8]) -> Vec<Item> {
-    input.iter().map(|x| Item::Symbol(i32::from(*x))).collect()
 }
 
 fn string_to_items<S: Into<String>>(input: S) -> Vec<Item> {
