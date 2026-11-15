@@ -46,7 +46,7 @@
  * recognizer, bocage, order and value, so a parse mallocs and frees many
  * default-size chunks, which miss glibc's tcache and go through its bins.
  * A freed default-size chunk is kept on a per-thread LIFO list (at most
- * CHUNK_CACHE_MAX, 4 MiB) and handed to the next obstack.  Chunks never
+ * CHUNK_CACHE_MAX, 1 MiB) and handed to the next obstack.  Chunks never
  * cross threads through the cache; a pthread key destructor frees the
  * list when the thread exits.  Windows builds keep plain malloc/free. */
 #if !defined(_WIN32)
@@ -55,7 +55,7 @@
 
 #ifdef MARPA_OBS_CHUNK_CACHE
 # include <pthread.h>
-# define CHUNK_CACHE_MAX 256
+# define CHUNK_CACHE_MAX 64
 
 struct chunk_cache
 {
