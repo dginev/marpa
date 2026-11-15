@@ -15,7 +15,10 @@ adds a per-thread cache of freed default-size chunks, so the obstacks libmarpa b
 bocage, order and value reuse memory instead of calling `malloc`/`free`
 (allocation only; parses are unchanged). The cache is a heap struct held by
 a pthread key, freed by the key's destructor at thread exit (Windows and
-WebAssembly keep plain `malloc`/`free`). Its header records the change;
+WebAssembly keep plain `malloc`/`free`). A cached chunk is poisoned under
+ASan and marked no-access under valgrind (debug-assertion builds where
+`<valgrind/memcheck.h>` exists), so a use after free still reports; release
+builds compile neither. Its header records the change;
 `diff` it against the tarball's `marpa_obs.c` to see it whole. The
 test-only `chunk-cache-stats` feature exposes the calling thread's cache
 counters (`chunk_cache_stats()`), read by `marpa/tests/obstack_chunk_cache.rs`

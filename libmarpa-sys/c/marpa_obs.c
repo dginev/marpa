@@ -25,8 +25,9 @@
 
 /* Modified 2026-11-15 for the libmarpa-asf-sys crate (dginev/marpa): a
  * 16 KiB default chunk and a per-thread cache of default-size chunks,
- * held by a pthread key (see "Chunk cache" below), with test-only counters
- * under MARPA_OBS_CHUNK_CACHE_STATS.  Otherwise identical to libmarpa 8.6.2's
+ * held by a pthread key (see "Chunk cache" below), poisoned for ASan and
+ * valgrind while cached, with test-only counters under
+ * MARPA_OBS_CHUNK_CACHE_STATS.  Otherwise identical to libmarpa 8.6.2's
  * marpa_obs.c.  */
 
 # include "config.h"
@@ -77,6 +78,53 @@ struct marpa_asf_obs_chunk_cache_stats
 # include <stdlib.h>
 # define CHUNK_CACHE_MAX 64
 
+/* A cached chunk is freed memory to the program: poisoned under ASan, no-access
+ * under valgrind (MARPA_OBS_VALGRIND, the crate's debug-assertion builds), so a
+ * use after marpa_obs_free still reports.  Without either, nothing is emitted. */
+# if defined(__SANITIZE_ADDRESS__)
+#  define MARPA_OBS_ASAN 1
+# elif defined(__has_feature)
+#  if __has_feature(address_sanitizer)
+#   define MARPA_OBS_ASAN 1
+#  endif
+# endif
+# ifdef MARPA_OBS_ASAN
+#  include <sanitizer/asan_interface.h>
+# endif
+# if defined(MARPA_OBS_VALGRIND) && defined(__has_include)
+#  if __has_include(<valgrind/memcheck.h>)
+#   include <valgrind/memcheck.h>
+#   define MARPA_OBS_MEMCHECK 1
+#  endif
+# endif
+# if defined(MARPA_OBS_ASAN) || defined(MARPA_OBS_MEMCHECK)
+#  ifndef MARPA_OBS_ASAN
+#   define ASAN_POISON_MEMORY_REGION(p, n) ((void) 0)
+#   define ASAN_UNPOISON_MEMORY_REGION(p, n) ((void) 0)
+#  endif
+#  ifndef MARPA_OBS_MEMCHECK
+#   define VALGRIND_MAKE_MEM_NOACCESS(p, n) ((void) 0)
+#   define VALGRIND_MAKE_MEM_DEFINED(p, n) ((void) 0)
+#   define VALGRIND_MAKE_MEM_UNDEFINED(p, n) ((void) 0)
+#  endif
+/* The chunk enters the cache. */
+#  define CHUNK_HIDE(c) \
+  (ASAN_POISON_MEMORY_REGION ((c), DEFAULT_CHUNK_SIZE), \
+   VALGRIND_MAKE_MEM_NOACCESS ((c), DEFAULT_CHUNK_SIZE))
+/* The cache reads the chunk's list link. */
+#  define CHUNK_SHOW_HEADER(c) \
+  (ASAN_UNPOISON_MEMORY_REGION (&(c)->header, sizeof ((c)->header)), \
+   VALGRIND_MAKE_MEM_DEFINED (&(c)->header, sizeof ((c)->header)))
+/* The chunk leaves the cache for an obstack: fresh, as from malloc. */
+#  define CHUNK_REUSE(c) \
+  (ASAN_UNPOISON_MEMORY_REGION ((c), DEFAULT_CHUNK_SIZE), \
+   VALGRIND_MAKE_MEM_UNDEFINED ((c), DEFAULT_CHUNK_SIZE))
+# else
+#  define CHUNK_HIDE(c)
+#  define CHUNK_SHOW_HEADER(c)
+#  define CHUNK_REUSE(c)
+# endif
+
 struct chunk_cache
 {
   struct marpa_obstack_chunk *head;     /* linked through header.prev */
@@ -102,7 +150,9 @@ chunk_cache_destroy (void *p)
       struct marpa_obstack_chunk *chunk = cache->head;
       while (chunk)
         {
-          struct marpa_obstack_chunk *prev = chunk->header.prev;
+          struct marpa_obstack_chunk *prev;
+          CHUNK_SHOW_HEADER (chunk);
+          prev = chunk->header.prev;
           my_free (chunk);
           chunk = prev;
         }
@@ -150,7 +200,9 @@ chunk_alloc (size_t size)
   if (size == DEFAULT_CHUNK_SIZE && cache && cache->head)
     {
       struct marpa_obstack_chunk *const chunk = cache->head;
+      CHUNK_SHOW_HEADER (chunk);
       cache->head = chunk->header.prev;
+      CHUNK_REUSE (chunk);
       cache->count--;
       CHUNK_STAT ((cache->stats.hits++, cache->stats.count--));
       return chunk;
@@ -175,6 +227,7 @@ chunk_release (struct marpa_obstack_chunk *chunk)
       return;
     }
   chunk->header.prev = cache->head;
+  CHUNK_HIDE (chunk);
   cache->head = chunk;
   cache->count++;
   CHUNK_STAT ((cache->stats.kept++, cache->stats.count++,

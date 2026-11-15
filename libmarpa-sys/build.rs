@@ -109,6 +109,23 @@ fn build_libmarpa<P: AsRef<Path>>(path: P) -> io::Result<()> {
     if env::var_os("CARGO_FEATURE_CHUNK_CACHE_STATS").is_some() {
         build.define("MARPA_OBS_CHUNK_CACHE_STATS", None);
     }
+    // valgrind client requests on cached chunks (c/marpa_obs.c, where the header exists):
+    // debug-assertion builds only, so a release build's cache costs not one instruction.
+    if env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some() {
+        build.define("MARPA_OBS_VALGRIND", None);
+    }
+    // Rust (-Zsanitizer=address) and the C (CFLAGS=-fsanitize=address) both under ASan:
+    // tests/obstack.rs then expects a read of a cached chunk to be reported.
+    println!("cargo::rustc-check-cfg=cfg(marpa_asan)");
+    let rust_asan = env::var("CARGO_CFG_SANITIZE").is_ok_and(|s| s.split(',').any(|s| s == "address"));
+    let c_asan = build.get_compiler().args().iter().any(|a| {
+        a.to_str()
+            .and_then(|a| a.strip_prefix("-fsanitize="))
+            .is_some_and(|s| s.split(',').any(|s| s == "address"))
+    });
+    if rust_asan && c_asan {
+        println!("cargo::rustc-cfg=marpa_asan");
+    }
     build
         .files(LIBMARPA_SOURCES.iter().map(|f| path.join(f)))
         .files(&overlays)
