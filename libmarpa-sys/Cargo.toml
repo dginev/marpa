@@ -4,7 +4,7 @@
 # stays the default, and downstream depends on it via cargo's `package` alias
 # (`libmarpa-sys = { package = "libmarpa-asf-sys" }`), so no code changes.
 name = "libmarpa-asf-sys"
-version = "0.3.0"
+version = "0.3.1"
 authors = [
   "Josh Robson Chase <josh@robsonchase.com>",
   "Deyan Ginev <deyan.ginev@gmail.com>",
@@ -16,6 +16,11 @@ documentation = "https://docs.rs/libmarpa-asf-sys"
 keywords = ["marpa", "parsing", "bindings", "ffi", "earley"]
 categories = ["external-ffi-bindings", "parsing"]
 edition = "2024"
+
+[features]
+# Test-only: per-thread counters of the obstack chunk cache (`c/marpa_obs.c`),
+# read with `chunk_cache_stats`. Off in every normal build.
+chunk-cache-stats = []
 
 [dependencies]
 libc = "0.2"

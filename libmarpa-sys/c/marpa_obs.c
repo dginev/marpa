@@ -24,8 +24,9 @@
  * Boston, MA 02110-1301, USA.  */
 
 /* Modified 2026-11-15 for the libmarpa-asf-sys crate (dginev/marpa): a
- * 16 KiB default chunk and a per-thread cache of default-size chunks
- * (see "Chunk cache" below).  Otherwise identical to libmarpa 8.6.2's
+ * 16 KiB default chunk and a per-thread cache of default-size chunks,
+ * held by a pthread key (see "Chunk cache" below), with test-only counters
+ * under MARPA_OBS_CHUNK_CACHE_STATS.  Otherwise identical to libmarpa 8.6.2's
  * marpa_obs.c.  */
 
 # include "config.h"
@@ -46,61 +47,113 @@
  * recognizer, bocage, order and value, so a parse mallocs and frees many
  * default-size chunks, which miss glibc's tcache and go through its bins.
  * A freed default-size chunk is kept on a per-thread LIFO list (at most
- * CHUNK_CACHE_MAX, 1 MiB) and handed to the next obstack.  Chunks never
- * cross threads through the cache; a pthread key destructor frees the
- * list when the thread exits.  Windows and WebAssembly builds keep plain
- * malloc/free. */
+ * CHUNK_CACHE_MAX, 1 MiB) and handed to the next obstack.  The list lives
+ * in a malloc'ed struct held only by a pthread key, never in _Thread_local
+ * storage: macOS frees that storage in its own key destructor, which may
+ * run before this one.  Windows and WebAssembly keep plain malloc/free. */
 #if !defined(_WIN32) && !defined(__wasm__)
 # define MARPA_OBS_CHUNK_CACHE 1
 #endif
 
+/* Test-only counters (the crate's `chunk-cache-stats` feature). */
+struct marpa_asf_obs_chunk_cache_stats
+{
+  unsigned long long hits;      /* chunk_alloc served from the cache */
+  unsigned long long kept;      /* chunk_release kept a chunk */
+  unsigned long long over_cap;  /* chunk_release freed: the cache was full */
+  unsigned long long oversize;  /* chunk_alloc of a non-default size */
+  unsigned long long count;     /* chunks cached now */
+  unsigned long long peak;      /* most chunks cached at once */
+};
+#ifdef MARPA_OBS_CHUNK_CACHE_STATS
+# define CHUNK_STAT(stmt) stmt
+# define CHUNK_ALLOC_CREATES 1  /* count oversize requests before any release */
+#else
+# define CHUNK_STAT(stmt)
+# define CHUNK_ALLOC_CREATES 0
+#endif
+
 #ifdef MARPA_OBS_CHUNK_CACHE
 # include <pthread.h>
+# include <stdlib.h>
 # define CHUNK_CACHE_MAX 64
 
 struct chunk_cache
 {
   struct marpa_obstack_chunk *head;     /* linked through header.prev */
   int count;
-  int registered;                       /* the key's destructor will run */
+#ifdef MARPA_OBS_CHUNK_CACHE_STATS
+  struct marpa_asf_obs_chunk_cache_stats stats;
+#endif
 };
 
-static _Thread_local struct chunk_cache tl_chunk_cache;
 static pthread_key_t chunk_cache_key;
 static pthread_once_t chunk_cache_once = PTHREAD_ONCE_INIT;
 static int chunk_cache_usable;
+/* The key's value once its destructor has run: the thread is exiting, and
+ * chunks released from later TSD destructors go straight to free(). */
+static struct chunk_cache chunk_cache_retired;
 
 static void
-chunk_cache_drain (void *p)
+chunk_cache_destroy (void *p)
 {
   struct chunk_cache *cache = p;
-  struct marpa_obstack_chunk *chunk = cache->head;
-  while (chunk)
+  if (cache != &chunk_cache_retired)
     {
-      struct marpa_obstack_chunk *prev = chunk->header.prev;
-      my_free (chunk);
-      chunk = prev;
+      struct marpa_obstack_chunk *chunk = cache->head;
+      while (chunk)
+        {
+          struct marpa_obstack_chunk *prev = chunk->header.prev;
+          my_free (chunk);
+          chunk = prev;
+        }
+      free (cache);
     }
-  cache->head = 0;
-  cache->count = 0;
-  cache->registered = 0;
+  /* POSIX cleared the value before this call and re-runs destructors while
+   * any value is non-null, at most PTHREAD_DESTRUCTOR_ITERATIONS rounds; the
+   * static marker owns nothing, so no round can leak or allocate. */
+  pthread_setspecific (chunk_cache_key, &chunk_cache_retired);
 }
 
 static void
 chunk_cache_key_create (void)
 {
-  chunk_cache_usable = pthread_key_create (&chunk_cache_key, chunk_cache_drain) == 0;
+  chunk_cache_usable = pthread_key_create (&chunk_cache_key, chunk_cache_destroy) == 0;
+}
+
+/* This thread's cache; with |create|, made on first use.  0 when there is
+ * none: the key or the struct could not be had, or the thread is exiting. */
+static struct chunk_cache *
+chunk_cache_get (int create)
+{
+  struct chunk_cache *cache;
+  if (pthread_once (&chunk_cache_once, chunk_cache_key_create) != 0 || !chunk_cache_usable)
+    return 0;
+  cache = pthread_getspecific (chunk_cache_key);
+  if (cache == &chunk_cache_retired)
+    return 0;
+  if (cache || !create)
+    return cache;
+  cache = calloc (1, sizeof (*cache));
+  if (cache && pthread_setspecific (chunk_cache_key, cache) != 0)
+    {
+      free (cache);
+      cache = 0;
+    }
+  return cache;
 }
 
 static void *
 chunk_alloc (size_t size)
 {
-  struct chunk_cache *const cache = &tl_chunk_cache;
-  if (size == DEFAULT_CHUNK_SIZE && cache->head)
+  struct chunk_cache *const cache = chunk_cache_get (CHUNK_ALLOC_CREATES);
+  CHUNK_STAT (if (cache && size != DEFAULT_CHUNK_SIZE) cache->stats.oversize++);
+  if (size == DEFAULT_CHUNK_SIZE && cache && cache->head)
     {
       struct marpa_obstack_chunk *const chunk = cache->head;
       cache->head = chunk->header.prev;
       cache->count--;
+      CHUNK_STAT ((cache->stats.hits++, cache->stats.count--));
       return chunk;
     }
   return my_malloc (size);
@@ -109,29 +162,45 @@ chunk_alloc (size_t size)
 static void
 chunk_release (struct marpa_obstack_chunk *chunk)
 {
-  struct chunk_cache *const cache = &tl_chunk_cache;
-  if (chunk->header.size != DEFAULT_CHUNK_SIZE || cache->count >= CHUNK_CACHE_MAX)
+  struct chunk_cache *cache;
+  if (chunk->header.size != DEFAULT_CHUNK_SIZE
+      || !(cache = chunk_cache_get (1)))
     {
       my_free (chunk);
       return;
     }
-  if (!cache->registered)
+  if (cache->count >= CHUNK_CACHE_MAX)
     {
-      pthread_once (&chunk_cache_once, chunk_cache_key_create);
-      if (!chunk_cache_usable || pthread_setspecific (chunk_cache_key, cache) != 0)
-        {
-          my_free (chunk);
-          return;
-        }
-      cache->registered = 1;
+      CHUNK_STAT (cache->stats.over_cap++);
+      my_free (chunk);
+      return;
     }
   chunk->header.prev = cache->head;
   cache->head = chunk;
   cache->count++;
+  CHUNK_STAT ((cache->stats.kept++, cache->stats.count++,
+               cache->stats.peak = MAX (cache->stats.peak, cache->stats.count)));
 }
 #else
 # define chunk_alloc(size) my_malloc (size)
 # define chunk_release(chunk) my_free (chunk)
+#endif
+
+#ifdef MARPA_OBS_CHUNK_CACHE_STATS
+/* This thread's counters; all zero where there is no cache. */
+void
+marpa_asf_obs_chunk_cache_stats (struct marpa_asf_obs_chunk_cache_stats *out)
+{
+  static const struct marpa_asf_obs_chunk_cache_stats zero;
+  *out = zero;
+#ifdef MARPA_OBS_CHUNK_CACHE
+  {
+    struct chunk_cache *const cache = chunk_cache_get (0);
+    if (cache)
+      *out = cache->stats;
+  }
+#endif
+}
 #endif
 
 struct marpa_obstack *

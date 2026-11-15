@@ -105,7 +105,11 @@ fn build_libmarpa<P: AsRef<Path>>(path: P) -> io::Result<()> {
     for overlay in &overlays {
         println!("cargo:rerun-if-changed={}", overlay.display());
     }
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    if env::var_os("CARGO_FEATURE_CHUNK_CACHE_STATS").is_some() {
+        build.define("MARPA_OBS_CHUNK_CACHE_STATS", None);
+    }
+    build
         .files(LIBMARPA_SOURCES.iter().map(|f| path.join(f)))
         .files(&overlays)
         .include(path)

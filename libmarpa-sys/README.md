@@ -13,8 +13,12 @@ One file is built from a modified copy instead of the tarball's:
 `c/marpa_obs.c` raises the default obstack chunk from 4 KiB to 16 KiB and
 adds a per-thread cache of freed default-size chunks, so the obstacks libmarpa begins and frees per earleme, recognizer,
 bocage, order and value reuse memory instead of calling `malloc`/`free`
-(allocation only; parses are unchanged). Its header records the change;
-`diff` it against the tarball's `marpa_obs.c` to see it whole.
+(allocation only; parses are unchanged). The cache is a heap struct held by
+a pthread key, freed by the key's destructor at thread exit (Windows and
+WebAssembly keep plain `malloc`/`free`). Its header records the change;
+`diff` it against the tarball's `marpa_obs.c` to see it whole. The
+test-only `chunk-cache-stats` feature exposes the calling thread's cache
+counters (`chunk_cache_stats()`), read by `marpa/tests/obstack_chunk_cache.rs`.
 
 This is the `[dependencies.libmarpa-sys]` carrier for the
 [`marpa`](../marpa/) crate. See the parent workspace `README.md`
