@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use bindgen::builder;
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 use tar::Archive;
 
 const LIBMARPA_VERSION: &str = "8.6.2";
@@ -14,10 +15,12 @@ const LIBMARPA_VERSION: &str = "8.6.2";
 // `marpa_obs.c`, which is built from this crate's `c/` (OVERLAY_SOURCES).
 const LIBMARPA_SOURCES: [&str; 5] = ["marpa.c", "marpa_avl.c", "marpa_tavl.c", "marpa_ami.c", "marpa_codes.c"];
 
-// Tarball files replaced by this crate's modified copies under `c/`; each
-// copy's header says what changed. `marpa_obs.c`: a per-thread cache of
-// default-size obstack chunks, 16 KiB each (allocation only; no parse behaviour).
-const OVERLAY_SOURCES: [&str; 1] = ["marpa_obs.c"];
+// Tarball files replaced by this crate's modified copies under `c/`, each with
+// the SHA-256 of the tarball file it was made from; each copy's header says what
+// changed. `marpa_obs.c`: a per-thread cache of default-size obstack chunks,
+// 16 KiB each (allocation only; no parse behaviour). A tarball whose file
+// differs fails the build, so a libmarpa upgrade re-reviews the overlay.
+const OVERLAY_SOURCES: [(&str, &str); 1] = [("marpa_obs.c", "699d6d0a5d7aec4ace7e4e2c0672f07beb65e8a334cfa448e0215eab111f3270")];
 
 fn crate_root() -> PathBuf {
     env::var("CARGO_MANIFEST_DIR").unwrap().into()
@@ -101,7 +104,15 @@ fn write_config_h<P: AsRef<Path>>(path: P) -> io::Result<()> {
 fn build_libmarpa<P: AsRef<Path>>(path: P) -> io::Result<()> {
     let path = path.as_ref();
     write_config_h(path)?;
-    let overlays: Vec<PathBuf> = OVERLAY_SOURCES.iter().map(|f| crate_root().join("c").join(f)).collect();
+    for (file, base) in OVERLAY_SOURCES {
+        let found: String = Sha256::digest(fs::read(path.join(file))?).iter().map(|b| format!("{b:02x}")).collect();
+        assert!(
+            found == base,
+            "libmarpa-{LIBMARPA_VERSION}'s {file} has SHA-256 {found}, but c/{file} was made from {base}: \
+             port the overlay's changes to the new {file} and record its hash in OVERLAY_SOURCES"
+        );
+    }
+    let overlays: Vec<PathBuf> = OVERLAY_SOURCES.iter().map(|(f, _)| crate_root().join("c").join(f)).collect();
     for overlay in &overlays {
         println!("cargo:rerun-if-changed={}", overlay.display());
     }
