@@ -50,14 +50,13 @@ jobs:
       - name: cargo test (chunk-cache-stats)
         run: cargo test --workspace --features chunk-cache-stats
 
-  # AddressSanitizer over the marpa crate's tests, libmarpa's C instrumented
+  # AddressSanitizer over the workspace's tests, libmarpa's C instrumented
   # too (clang + CFLAGS; cc reads CFLAGS), on the two targets with the
   # obstack chunk cache (libmarpa-sys/c/marpa_obs.c; Windows keeps plain
   # malloc/free). It catches what an equal-output test cannot: a chunk reused
-  # for a larger request, freed memory touched at thread exit. Only
-  # marpa-asf: libmarpa-sys's own create_grammar test never unrefs its
-  # grammar, which LeakSanitizer reports. Leak detection stays on (Linux;
-  # macOS's ASan has no LeakSanitizer).
+  # for a larger request, freed memory touched at thread exit, a read of a
+  # cached (poisoned) chunk. Leak detection stays on (Linux; macOS's ASan has
+  # no LeakSanitizer).
   asan:
     name: asan (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -71,6 +70,7 @@ jobs:
             target: aarch64-apple-darwin
     env:
       RUSTFLAGS: -Zsanitizer=address
+      RUSTDOCFLAGS: -Zsanitizer=address
       CC: clang
       CFLAGS: -fsanitize=address -fno-omit-frame-pointer
     steps:
@@ -80,9 +80,9 @@ jobs:
       # -Zsanitizer needs an explicit --target, so the sanitizer flags reach
       # the tests and not the build scripts.
       - name: cargo test (ASan)
-        run: cargo test -p marpa-asf --target ${{ matrix.target }}
+        run: cargo test --workspace --target ${{ matrix.target }}
       - name: cargo test (ASan, chunk-cache-stats)
-        run: cargo test -p marpa-asf --features chunk-cache-stats --target ${{ matrix.target }}
+        run: cargo test --workspace --features chunk-cache-stats --target ${{ matrix.target }}
 
   # Lint once on Linux — clippy/rustfmt results are platform-independent, so
   # running them across the matrix would only triple the chance of a flake.
