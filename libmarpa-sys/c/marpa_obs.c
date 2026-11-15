@@ -133,6 +133,13 @@ struct chunk_cache
   struct marpa_asf_obs_chunk_cache_stats stats;
 #endif
 };
+/* A thread's cache is allocated padded to 64 bytes, a cache line, so less of
+ * another thread's data shares its line. */
+union chunk_cache_padded
+{
+  struct chunk_cache cache;
+  char line[64];
+};
 
 static pthread_key_t chunk_cache_key;
 static pthread_once_t chunk_cache_once = PTHREAD_ONCE_INIT;
@@ -160,7 +167,8 @@ chunk_cache_destroy (void *p)
     }
   /* POSIX cleared the value before this call and re-runs destructors while
    * any value is non-null, at most PTHREAD_DESTRUCTOR_ITERATIONS rounds; the
-   * static marker owns nothing, so no round can leak or allocate. */
+   * static marker owns nothing, so no round can leak or allocate.  Being
+   * non-null, the marker makes every remaining round re-run this, a no-op. */
   pthread_setspecific (chunk_cache_key, &chunk_cache_retired);
 }
 
@@ -185,7 +193,7 @@ chunk_cache_get (int create)
     return 0;
   if (cache || !create)
     return cache;
-  cache = calloc (1, sizeof (*cache));
+  cache = calloc (1, sizeof (union chunk_cache_padded));
   if (cache && pthread_setspecific (chunk_cache_key, cache) != 0)
     {
       free (cache);
