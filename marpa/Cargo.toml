@@ -24,3 +24,11 @@ rustc-hash = "2.0.0"
 # unchanged while depending on the renamed sys crate. Local builds resolve via
 # `path`; the published crate uses the `version`.
 libmarpa-sys = { package = "libmarpa-asf-sys", version = "0.3.0", path = "../libmarpa-sys" }
+
+[features]
+# Test-only: the obstack chunk cache's counters, which `tests/obstack_chunk_cache.rs`
+# asserts. Off by default, so a plain `cargo test` runs the production C.
+chunk-cache-stats = ["libmarpa-sys/chunk-cache-stats"]
+
+[dev-dependencies]
+libc = "0.2"

@@ -31,10 +31,72 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+      # macOS's allocator fills freed memory (MallocScribble) and new memory
+      # (MallocPreScribble) with garbage, so a use of freed memory, such as
+      # TLS or obstack chunks touched at thread exit, misreads and fails
+      # even without ASan.
+      - name: Scribble freed and new memory (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          echo "MallocScribble=1" >> "$GITHUB_ENV"
+          echo "MallocPreScribble=1" >> "$GITHUB_ENV"
       - name: cargo build
         run: cargo build --workspace --all-targets
       - name: cargo test
         run: cargo test --workspace
+      # The same tests with the obstack chunk cache's test-only counters, which
+      # the plain run (the production C) does not compile.
+      - name: cargo test (chunk-cache-stats)
+        run: cargo test --workspace --features chunk-cache-stats
+
+  # AddressSanitizer over the workspace's tests, libmarpa's C instrumented
+  # too (clang + CFLAGS; cc reads CFLAGS), on the two targets with the
+  # obstack chunk cache (libmarpa-sys/c/marpa_obs.c; Windows keeps plain
+  # malloc/free). It catches what an equal-output test cannot: a chunk reused
+  # for a larger request, freed memory touched at thread exit, a read of a
+  # cached (poisoned) chunk. Leak detection stays on (Linux; macOS's ASan has
+  # no LeakSanitizer).
+  asan:
+    name: asan (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    env:
+      RUSTFLAGS: -Zsanitizer=address
+      RUSTDOCFLAGS: -Zsanitizer=address
+      CFLAGS: -fsanitize=address -fno-omit-frame-pointer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - name: C compiler (Linux)
+        if: runner.os == 'Linux'
+        run: echo "CC=clang" >> "$GITHUB_ENV"
+      # Homebrew's upstream clang, not Apple's: Apple clang instruments against
+      # ___asan_version_mismatch_check_apple_clang_*, which rustc's (upstream
+      # compiler-rt) ASan runtime lacks; disabling that guard would hide a real
+      # ABI mismatch, while upstream clang links with the guard kept. One
+      # deployment target and SDK for the C and the Rust.
+      - name: C compiler (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
+      # -Zsanitizer needs an explicit --target, so the sanitizer flags reach
+      # the tests and not the build scripts.
+      - name: cargo test (ASan)
+        run: cargo test --workspace --target ${{ matrix.target }}
+      - name: cargo test (ASan, chunk-cache-stats)
+        run: cargo test --workspace --features chunk-cache-stats --target ${{ matrix.target }}
 
   # Lint once on Linux — clippy/rustfmt results are platform-independent, so
   # running them across the matrix would only triple the chance of a flake.
@@ -48,3 +110,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo clippy (chunk-cache-stats)
+        run: cargo clippy --workspace --all-targets --features chunk-cache-stats -- -D warnings

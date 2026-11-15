@@ -5,20 +5,22 @@ use std::path::{Path, PathBuf};
 
 use bindgen::builder;
 use flate2::read::GzDecoder;
+use sha2::{Digest, Sha256};
 use tar::Archive;
 
 const LIBMARPA_VERSION: &str = "8.6.2";
 
 // The full library per the tarball's Makefile.am `libmarpa_la_SOURCES`
-// (Makefile.win32's shorter list predates marpa_tavl/marpa_codes).
-const LIBMARPA_SOURCES: [&str; 6] = [
-    "marpa.c",
-    "marpa_obs.c",
-    "marpa_avl.c",
-    "marpa_tavl.c",
-    "marpa_ami.c",
-    "marpa_codes.c",
-];
+// (Makefile.win32's shorter list predates marpa_tavl/marpa_codes), except
+// `marpa_obs.c`, which is built from this crate's `c/` (OVERLAY_SOURCES).
+const LIBMARPA_SOURCES: [&str; 5] = ["marpa.c", "marpa_avl.c", "marpa_tavl.c", "marpa_ami.c", "marpa_codes.c"];
+
+// Tarball files replaced by this crate's modified copies under `c/`, each with
+// the SHA-256 of the tarball file it was made from; each copy's header says what
+// changed. `marpa_obs.c`: a per-thread cache of default-size obstack chunks,
+// 16 KiB each (allocation only; no parse behaviour). A tarball whose file
+// differs fails the build, so a libmarpa upgrade re-reviews the overlay.
+const OVERLAY_SOURCES: [(&str, &str); 1] = [("marpa_obs.c", "699d6d0a5d7aec4ace7e4e2c0672f07beb65e8a334cfa448e0215eab111f3270")];
 
 fn crate_root() -> PathBuf {
     env::var("CARGO_MANIFEST_DIR").unwrap().into()
@@ -102,8 +104,42 @@ fn write_config_h<P: AsRef<Path>>(path: P) -> io::Result<()> {
 fn build_libmarpa<P: AsRef<Path>>(path: P) -> io::Result<()> {
     let path = path.as_ref();
     write_config_h(path)?;
-    cc::Build::new()
+    for (file, base) in OVERLAY_SOURCES {
+        let found: String = Sha256::digest(fs::read(path.join(file))?).iter().map(|b| format!("{b:02x}")).collect();
+        assert!(
+            found == base,
+            "libmarpa-{LIBMARPA_VERSION}'s {file} has SHA-256 {found}, but c/{file} was made from {base}: \
+             port the overlay's changes to the new {file} and record its hash in OVERLAY_SOURCES"
+        );
+    }
+    let overlays: Vec<PathBuf> = OVERLAY_SOURCES.iter().map(|(f, _)| crate_root().join("c").join(f)).collect();
+    for overlay in &overlays {
+        println!("cargo:rerun-if-changed={}", overlay.display());
+    }
+    let mut build = cc::Build::new();
+    if env::var_os("CARGO_FEATURE_CHUNK_CACHE_STATS").is_some() {
+        build.define("MARPA_OBS_CHUNK_CACHE_STATS", None);
+    }
+    // valgrind client requests on cached chunks (c/marpa_obs.c, where the header exists):
+    // debug-assertion builds only, so a release build's cache costs not one instruction.
+    if env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some() {
+        build.define("MARPA_OBS_VALGRIND", None);
+    }
+    // Rust (-Zsanitizer=address) and the C (CFLAGS=-fsanitize=address) both under ASan:
+    // tests/obstack.rs then expects a read of a cached chunk to be reported.
+    println!("cargo::rustc-check-cfg=cfg(marpa_asan)");
+    let rust_asan = env::var("CARGO_CFG_SANITIZE").is_ok_and(|s| s.split(',').any(|s| s == "address"));
+    let c_asan = build.get_compiler().args().iter().any(|a| {
+        a.to_str()
+            .and_then(|a| a.strip_prefix("-fsanitize="))
+            .is_some_and(|s| s.split(',').any(|s| s == "address"))
+    });
+    if rust_asan && c_asan {
+        println!("cargo::rustc-cfg=marpa_asan");
+    }
+    build
         .files(LIBMARPA_SOURCES.iter().map(|f| path.join(f)))
+        .files(&overlays)
         .include(path)
         // The previous configure invocation forced CFLAGS="-fPIC -O3"
         // regardless of cargo profile; keep libmarpa at full optimization
