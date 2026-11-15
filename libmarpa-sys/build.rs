@@ -16,7 +16,7 @@ const LIBMARPA_SOURCES: [&str; 5] = ["marpa.c", "marpa_avl.c", "marpa_tavl.c", "
 
 // Tarball files replaced by this crate's modified copies under `c/`; each
 // copy's header says what changed. `marpa_obs.c`: a per-thread cache of
-// default-size obstack chunks (allocation only; no parse behaviour).
+// default-size obstack chunks, 16 KiB each (allocation only; no parse behaviour).
 const OVERLAY_SOURCES: [&str; 1] = ["marpa_obs.c"];
 
 fn crate_root() -> PathBuf {

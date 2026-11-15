@@ -24,8 +24,9 @@
  * Boston, MA 02110-1301, USA.  */
 
 /* Modified 2026-11-15 for the libmarpa-asf-sys crate (dginev/marpa): a
- * per-thread cache of default-size chunks (see "Chunk cache" below).
- * Otherwise identical to libmarpa 8.6.2's marpa_obs.c.  */
+ * 16 KiB default chunk and a per-thread cache of default-size chunks
+ * (see "Chunk cache" below).  Otherwise identical to libmarpa 8.6.2's
+ * marpa_obs.c.  */
 
 # include "config.h"
 
@@ -37,13 +38,15 @@
  * allocator in git.  I assume that it assumes a 64-bit architecture.
  */
 #define MALLOC_OVERHEAD 32
-#define DEFAULT_CHUNK_SIZE (4096 - MALLOC_OVERHEAD)
+/* 16 KiB, not upstream's 4 KiB: a recognizer's or bocage's obstack grows
+ * through many chunks, and objects over 4 KiB took a chunk of their own. */
+#define DEFAULT_CHUNK_SIZE (16384 - MALLOC_OVERHEAD)
 
 /* Chunk cache.  libmarpa begins and frees obstacks per earleme, per
  * recognizer, bocage, order and value, so a parse mallocs and frees many
- * default-size chunks; 4 KiB requests miss glibc's tcache and go through
- * its bins.  A freed default-size chunk is kept on a per-thread LIFO list
- * (at most CHUNK_CACHE_MAX) and handed to the next obstack.  Chunks never
+ * default-size chunks, which miss glibc's tcache and go through its bins.
+ * A freed default-size chunk is kept on a per-thread LIFO list (at most
+ * CHUNK_CACHE_MAX, 4 MiB) and handed to the next obstack.  Chunks never
  * cross threads through the cache; a pthread key destructor frees the
  * list when the thread exits.  Windows builds keep plain malloc/free. */
 #if !defined(_WIN32)
@@ -52,7 +55,7 @@
 
 #ifdef MARPA_OBS_CHUNK_CACHE
 # include <pthread.h>
-# define CHUNK_CACHE_MAX 64
+# define CHUNK_CACHE_MAX 256
 
 struct chunk_cache
 {
