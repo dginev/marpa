@@ -10,15 +10,14 @@ use tar::Archive;
 const LIBMARPA_VERSION: &str = "8.6.2";
 
 // The full library per the tarball's Makefile.am `libmarpa_la_SOURCES`
-// (Makefile.win32's shorter list predates marpa_tavl/marpa_codes).
-const LIBMARPA_SOURCES: [&str; 6] = [
-    "marpa.c",
-    "marpa_obs.c",
-    "marpa_avl.c",
-    "marpa_tavl.c",
-    "marpa_ami.c",
-    "marpa_codes.c",
-];
+// (Makefile.win32's shorter list predates marpa_tavl/marpa_codes), except
+// `marpa_obs.c`, which is built from this crate's `c/` (OVERLAY_SOURCES).
+const LIBMARPA_SOURCES: [&str; 5] = ["marpa.c", "marpa_avl.c", "marpa_tavl.c", "marpa_ami.c", "marpa_codes.c"];
+
+// Tarball files replaced by this crate's modified copies under `c/`; each
+// copy's header says what changed. `marpa_obs.c`: a per-thread cache of
+// default-size obstack chunks (allocation only; no parse behaviour).
+const OVERLAY_SOURCES: [&str; 1] = ["marpa_obs.c"];
 
 fn crate_root() -> PathBuf {
     env::var("CARGO_MANIFEST_DIR").unwrap().into()
@@ -102,8 +101,13 @@ fn write_config_h<P: AsRef<Path>>(path: P) -> io::Result<()> {
 fn build_libmarpa<P: AsRef<Path>>(path: P) -> io::Result<()> {
     let path = path.as_ref();
     write_config_h(path)?;
+    let overlays: Vec<PathBuf> = OVERLAY_SOURCES.iter().map(|f| crate_root().join("c").join(f)).collect();
+    for overlay in &overlays {
+        println!("cargo:rerun-if-changed={}", overlay.display());
+    }
     cc::Build::new()
         .files(LIBMARPA_SOURCES.iter().map(|f| path.join(f)))
+        .files(&overlays)
         .include(path)
         // The previous configure invocation forced CFLAGS="-fPIC -O3"
         // regardless of cargo profile; keep libmarpa at full optimization
