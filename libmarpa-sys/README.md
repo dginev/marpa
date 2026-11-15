@@ -28,3 +28,16 @@ counters only, so a stats build takes production's paths.
 This is the `[dependencies.libmarpa-sys]` carrier for the
 [`marpa`](../marpa/) crate. See the parent workspace `README.md`
 for the full picture.
+
+## License
+
+The Rust code is under MIT OR Apache-2.0. The bundled libmarpa C source keeps
+its own licenses, given in its files' headers and in the tarball's `COPYING`
+and `COPYING.LESSER`:
+
+* most of libmarpa: MIT;
+* `marpa_obs.c` and `marpa_obs.h` (from GNU obstack), including this crate's
+  modified `c/marpa_obs.c`: LGPL-2.1-or-later;
+* `marpa_avl.[ch]` and `marpa_tavl.[ch]` (from GNU libavl): LGPL-3.0-or-later.
+
+The crate's `license` field states the combination.

@@ -30,6 +30,9 @@ Dual-licensed under Apache-2.0 OR MIT:
 * [LICENSE-APACHE](LICENSE-APACHE)
 * [LICENSE-MIT](LICENSE-MIT)
 
+`libmarpa-asf-sys` also bundles the libmarpa C source, which is mostly MIT but has LGPL
+files (the obstack and AVL code); see [its README](libmarpa-sys/README.md#license).
+
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally
