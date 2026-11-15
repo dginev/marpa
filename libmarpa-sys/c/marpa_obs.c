@@ -48,8 +48,9 @@
  * A freed default-size chunk is kept on a per-thread LIFO list (at most
  * CHUNK_CACHE_MAX, 1 MiB) and handed to the next obstack.  Chunks never
  * cross threads through the cache; a pthread key destructor frees the
- * list when the thread exits.  Windows builds keep plain malloc/free. */
-#if !defined(_WIN32)
+ * list when the thread exits.  Windows and WebAssembly builds keep plain
+ * malloc/free. */
+#if !defined(_WIN32) && !defined(__wasm__)
 # define MARPA_OBS_CHUNK_CACHE 1
 #endif
 
