@@ -164,6 +164,8 @@ chunk_cache_destroy (void *p)
   pthread_setspecific (chunk_cache_key, &chunk_cache_retired);
 }
 
+/* The key is never deleted, so its destructor must outlive every thread:
+ * dlclose of a library holding this code is unsupported, as for any Rust rlib. */
 static void
 chunk_cache_key_create (void)
 {
