@@ -1,9 +1,10 @@
 //! libmarpa-asf-sys builds `marpa_obs.c` with a per-thread cache of freed
 //! default-size (16 KiB) obstack chunks (`libmarpa-sys/c/marpa_obs.c`), held by a
 //! pthread key whose destructor frees it at thread exit. Recycled chunks hold stale
-//! bytes, so every parse must equal the first; the cache's test-only counters
-//! (`chunk-cache-stats`) prove the paths ran: hits, a full cache (the 64-chunk cap),
-//! and chunks larger than 16 KiB, which must never be served from the cache.
+//! bytes, so every parse must equal the first. Built with the `chunk-cache-stats` feature,
+//! the cache's test-only counters prove the paths ran: hits, a full cache (the 64-chunk
+//! cap), and chunks larger than 16 KiB, which must never be served from the cache. Without
+//! it, the same parses run on the production C.
 extern crate marpa_asf as marpa;
 
 use marpa::grammar::Grammar;
@@ -17,8 +18,18 @@ use marpa::tree_builder::*;
 use std::io::Cursor;
 
 /// The cache exists on every target but Windows and WebAssembly (`marpa_obs.c`).
+#[cfg(feature = "chunk-cache-stats")]
 const CACHED: bool = cfg!(not(any(windows, target_family = "wasm")));
+#[cfg(feature = "chunk-cache-stats")]
 const CHUNK_CACHE_MAX: u64 = 64;
+
+/// The calling thread's cache counters; `()` without the `chunk-cache-stats` feature.
+#[cfg(feature = "chunk-cache-stats")]
+fn stats() -> libmarpa_sys::ChunkCacheStats {
+    libmarpa_sys::chunk_cache_stats()
+}
+#[cfg(not(feature = "chunk-cache-stats"))]
+fn stats() {}
 
 /// Parse `input` and keep everything alive: the value, and the parser and tree that own the
 /// recognizer's, bocage's and order's obstacks.
@@ -125,16 +136,19 @@ fn recycled_chunks_parse_identically_across_threads() {
                     got.extend((0..4).map(|_| (false, parse_once(&small).expect("parse"))));
                     assert_eq!(parse_keywords(2000).expect("keyword parse"), expected_kw);
                 }
-                (got, libmarpa_sys::chunk_cache_stats())
+                (got, stats())
             })
         })
         .collect();
     for h in handles {
         // Each thread exits with a full cache: its key destructor frees it.
-        let (got, stats) = h.join().expect("thread");
+        let (got, _stats) = h.join().expect("thread");
         for (is_big, value) in got {
             assert_eq!(&value, if is_big { &expected_big } else { &expected_small });
         }
+        #[cfg(feature = "chunk-cache-stats")]
+        let stats = _stats;
+        #[cfg(feature = "chunk-cache-stats")]
         if CACHED {
             assert!(stats.hits > 100, "the cache served chunks: {stats:?}");
             assert_eq!(stats.peak, CHUNK_CACHE_MAX, "the cache filled to its cap: {stats:?}");
@@ -160,7 +174,11 @@ fn parse_from_a_later_tsd_destructor_bypasses_the_retired_cache() {
 
     static KEY: Mutex<Option<libc::pthread_key_t>> = Mutex::new(None);
     static ROUNDS: AtomicUsize = AtomicUsize::new(0);
-    static LATE: Mutex<Option<(String, libmarpa_sys::ChunkCacheStats)>> = Mutex::new(None);
+    #[cfg(feature = "chunk-cache-stats")]
+    type Stats = libmarpa_sys::ChunkCacheStats;
+    #[cfg(not(feature = "chunk-cache-stats"))]
+    type Stats = ();
+    static LATE: Mutex<Option<(String, Stats)>> = Mutex::new(None);
 
     extern "C" fn late(value: *mut c_void) {
         // Round one may run before or after the cache's destructor (key order is the
@@ -171,7 +189,7 @@ fn parse_from_a_later_tsd_destructor_bypasses_the_retired_cache() {
             return;
         }
         let value = parse_once(&rules_input(300)).expect("late parse");
-        *LATE.lock().unwrap() = Some((value, libmarpa_sys::chunk_cache_stats()));
+        *LATE.lock().unwrap() = Some((value, stats()));
     }
 
     let small = rules_input(300);
@@ -185,10 +203,12 @@ fn parse_from_a_later_tsd_destructor_bypasses_the_retired_cache() {
     })
     .join()
     .expect("thread");
-    let (value, stats) = LATE.lock().unwrap().take().expect("the late destructor parsed");
+    let (value, _stats) = LATE.lock().unwrap().take().expect("the late destructor parsed");
     assert_eq!(value, expected);
     assert_eq!(ROUNDS.load(Ordering::SeqCst), 2);
+    #[cfg(feature = "chunk-cache-stats")]
     if CACHED {
+        let stats = _stats;
         assert_eq!(stats, libmarpa_sys::ChunkCacheStats::default(), "no cache after retirement");
     }
 }

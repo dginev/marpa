@@ -31,7 +31,7 @@ pub struct ChunkCacheStats {
     pub kept: u64,
     /// Freed default-size chunks freed because the cache was full.
     pub over_cap: u64,
-    /// Chunk requests of a non-default (larger) size.
+    /// Chunk requests of a non-default (larger) size, once the thread has a cache.
     pub oversize: u64,
     /// Chunks cached now.
     pub count: u64,

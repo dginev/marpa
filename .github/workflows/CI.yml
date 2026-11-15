@@ -45,6 +45,10 @@ jobs:
         run: cargo build --workspace --all-targets
       - name: cargo test
         run: cargo test --workspace
+      # The same tests with the obstack chunk cache's test-only counters, which
+      # the plain run (the production C) does not compile.
+      - name: cargo test (chunk-cache-stats)
+        run: cargo test --workspace --features chunk-cache-stats
 
   # AddressSanitizer over the marpa crate's tests, libmarpa's C instrumented
   # too (clang + CFLAGS; cc reads CFLAGS), on the two targets with the
@@ -77,6 +81,8 @@ jobs:
       # the tests and not the build scripts.
       - name: cargo test (ASan)
         run: cargo test -p marpa-asf --target ${{ matrix.target }}
+      - name: cargo test (ASan, chunk-cache-stats)
+        run: cargo test -p marpa-asf --features chunk-cache-stats --target ${{ matrix.target }}
 
   # Lint once on Linux — clippy/rustfmt results are platform-independent, so
   # running them across the matrix would only triple the chance of a flake.
@@ -90,3 +96,5 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo clippy (chunk-cache-stats)
+        run: cargo clippy --workspace --all-targets --features chunk-cache-stats -- -D warnings

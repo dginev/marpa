@@ -18,7 +18,9 @@ a pthread key, freed by the key's destructor at thread exit (Windows and
 WebAssembly keep plain `malloc`/`free`). Its header records the change;
 `diff` it against the tarball's `marpa_obs.c` to see it whole. The
 test-only `chunk-cache-stats` feature exposes the calling thread's cache
-counters (`chunk_cache_stats()`), read by `marpa/tests/obstack_chunk_cache.rs`.
+counters (`chunk_cache_stats()`), read by `marpa/tests/obstack_chunk_cache.rs`
+(through `marpa-asf`'s feature of the same name) and `tests/obstack.rs`; it adds
+counters only, so a stats build takes production's paths.
 
 This is the `[dependencies.libmarpa-sys]` carrier for the
 [`marpa`](../marpa/) crate. See the parent workspace `README.md`

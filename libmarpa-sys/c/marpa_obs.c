@@ -55,22 +55,21 @@
 # define MARPA_OBS_CHUNK_CACHE 1
 #endif
 
-/* Test-only counters (the crate's `chunk-cache-stats` feature). */
+/* Test-only counters (the crate's `chunk-cache-stats` feature).  They count
+ * only what a cache exists for; the control flow is production's. */
 struct marpa_asf_obs_chunk_cache_stats
 {
   unsigned long long hits;      /* chunk_alloc served from the cache */
   unsigned long long kept;      /* chunk_release kept a chunk */
   unsigned long long over_cap;  /* chunk_release freed: the cache was full */
-  unsigned long long oversize;  /* chunk_alloc of a non-default size */
+  unsigned long long oversize;  /* chunk_alloc of a non-default size, cache made */
   unsigned long long count;     /* chunks cached now */
   unsigned long long peak;      /* most chunks cached at once */
 };
 #ifdef MARPA_OBS_CHUNK_CACHE_STATS
 # define CHUNK_STAT(stmt) stmt
-# define CHUNK_ALLOC_CREATES 1  /* count oversize requests before any release */
 #else
 # define CHUNK_STAT(stmt)
-# define CHUNK_ALLOC_CREATES 0
 #endif
 
 #ifdef MARPA_OBS_CHUNK_CACHE
@@ -146,7 +145,7 @@ chunk_cache_get (int create)
 static void *
 chunk_alloc (size_t size)
 {
-  struct chunk_cache *const cache = chunk_cache_get (CHUNK_ALLOC_CREATES);
+  struct chunk_cache *const cache = chunk_cache_get (0);
   CHUNK_STAT (if (cache && size != DEFAULT_CHUNK_SIZE) cache->stats.oversize++);
   if (size == DEFAULT_CHUNK_SIZE && cache && cache->head)
     {
