@@ -71,12 +71,26 @@ jobs:
     env:
       RUSTFLAGS: -Zsanitizer=address
       RUSTDOCFLAGS: -Zsanitizer=address
-      CC: clang
       CFLAGS: -fsanitize=address -fno-omit-frame-pointer
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
+      - name: C compiler (Linux)
+        if: runner.os == 'Linux'
+        run: echo "CC=clang" >> "$GITHUB_ENV"
+      # Homebrew's upstream clang, not Apple's: Apple clang instruments against
+      # ___asan_version_mismatch_check_apple_clang_*, which rustc's (upstream
+      # compiler-rt) ASan runtime lacks; disabling that guard would hide a real
+      # ABI mismatch, while upstream clang links with the guard kept. One
+      # deployment target and SDK for the C and the Rust.
+      - name: C compiler (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew list llvm >/dev/null 2>&1 || brew install llvm
+          echo "CC=$(brew --prefix llvm)/bin/clang" >> "$GITHUB_ENV"
+          echo "SDKROOT=$(xcrun --show-sdk-path)" >> "$GITHUB_ENV"
+          echo "MACOSX_DEPLOYMENT_TARGET=11.0" >> "$GITHUB_ENV"
       # -Zsanitizer needs an explicit --target, so the sanitizer flags reach
       # the tests and not the build scripts.
       - name: cargo test (ASan)
